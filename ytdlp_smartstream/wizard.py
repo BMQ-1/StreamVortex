@@ -34,11 +34,14 @@ console = Console()
 def run_wizard():
     """Runs the main interactive wizard loop."""
     while True:
+        from .engine import find_ytdlp_conf
+        active_conf = find_ytdlp_conf()
+        conf_str = f"\n[dim]Config: [bold yellow]{active_conf.name}[/bold yellow] ({active_conf.parent})[/dim]" if active_conf else ""
         console.clear()
         console.print(
             Panel.fit(
-                "[bold cyan]⚡ StreamVortex Control Center[/bold cyan] [bold white](Powered by yt-dlp)[/bold white]\n"
-                "[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio for yt-dlp[/dim]",
+                f"[bold cyan]⚡ StreamVortex Control Center[/bold cyan] [bold white](Powered by yt-dlp)[/bold white]\n"
+                f"[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio for yt-dlp[/dim]{conf_str}",
                 border_style="bright_blue"
             )
         )
@@ -135,16 +138,11 @@ def _handle_quick_sniff():
     if "Play Now" in action:
         _play_url(sniffed.url, sniffed.headers.get("User-Agent"))
     elif "Download Video" in action:
-        d_dir = get_download_dir()
-        out_file = str(d_dir / "downloaded_stream.mp4")
-        subprocess.run(["yt-dlp", sniffed.url, "-o", out_file, "--referer", url])
-        add_history_entry(sniffed.page_title or "Stream", out_file, sniffed.url)
+        from .engine import run_ytdlp_download
+        run_ytdlp_download(sniffed.url, referer=url, title=sniffed.page_title)
     elif "Record Live" in action:
-        d_dir = get_download_dir()
-        import time
-        out_file = str(d_dir / f"live_record_{int(time.time())}.mp4")
-        record_stream(sniffed.url, out_file, headers=sniffed.headers)
-        add_history_entry(sniffed.page_title or "Live Stream", out_file, sniffed.url)
+        from .engine import run_ffmpeg_record
+        run_ffmpeg_record(sniffed.url, headers=sniffed.headers, title=sniffed.page_title)
     elif "Copy URL" in action:
         copy_to_clipboard(sniffed.url)
         console.print("[green][+] Copied to clipboard![/green]")
@@ -194,15 +192,22 @@ def _handle_tiktok_live():
         if "Play Stream" in act:
             _play_url(best.url)
         elif "Download Live" in act:
-            d_dir = get_download_dir()
-            out = str(d_dir / f"{creator_clean}_live.mp4")
             from .engine import run_ytdlp_download
-            run_ytdlp_download(best.url, out, referer=f"https://www.tiktok.com/@{creator_clean}/live", is_live=True)
+            run_ytdlp_download(
+                best.url,
+                referer=f"https://www.tiktok.com/@{creator_clean}/live",
+                is_live=True,
+                title=result.title,
+                uploader=result.uploader
+            )
         elif "Record Stream" in act:
-            d_dir = get_download_dir()
-            out = str(d_dir / f"{creator_clean}_live.mp4")
-            record_stream(best.url, out, headers=result.http_headers)
-            add_history_entry(result.title, out, best.url)
+            from .engine import run_ffmpeg_record
+            run_ffmpeg_record(
+                best.url,
+                headers=result.http_headers,
+                title=result.title,
+                uploader=result.uploader
+            )
         elif "Copy M3U8" in act:
             copy_to_clipboard(best.url)
             console.print("[green][+] Copied .m3u8 URL to clipboard![/green]")
@@ -212,13 +217,10 @@ def _handle_tiktok_live():
 
 
 def _start_watchdog(creator_clean: str):
-    d_dir = get_download_dir()
-    import time
+    from .engine import run_ffmpeg_record
     def on_live(res):
-        out = str(d_dir / f"{creator_clean}_live_{int(time.time())}.mp4")
         hls = next((f for f in res.formats if f.protocol == "m3u8_native"), res.formats[0])
-        record_stream(hls.url, out, headers=res.http_headers)
-        add_history_entry(res.title, out, hls.url)
+        run_ffmpeg_record(hls.url, headers=res.http_headers, title=res.title, uploader=creator_clean)
     wait_for_live(creator_clean, poll_interval=10, on_live_start=on_live)
 
 
@@ -228,11 +230,10 @@ def _handle_audio_extract():
         return
     url = url.strip()
 
-    d_dir = get_download_dir()
-    out_file = str(d_dir / "%(title)s.%(ext)s")
     console.print("\n[bold cyan]Extracting audio track as MP3...[/bold cyan]")
     from .engine import run_ytdlp_download
-    run_ytdlp_download(url, out_file, audio_only=True)
+    run_ytdlp_download(url, audio_only=True)
+    d_dir = get_download_dir()
     console.print(f"\n[bold green][+] Audio saved to: {d_dir}[/bold green]")
 
 

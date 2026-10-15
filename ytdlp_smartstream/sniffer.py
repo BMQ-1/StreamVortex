@@ -69,6 +69,14 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
         with urllib.request.urlopen(req, timeout=8) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
 
+            # Extract HTML title or OpenGraph title
+            title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+            page_title = title_m.group(1).strip() if title_m else None
+            if not page_title:
+                og_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']', html, re.IGNORECASE)
+                if og_m:
+                    page_title = og_m.group(1).strip()
+
             # Look for master.m3u8 or any .m3u8
             m3u8_matches = [m.replace("\\u002F", "/").replace("\\/", "/") for m in M3U8_REGEX.findall(html)]
             m3u8_clean = [u for u in m3u8_matches if not is_ad_or_tracker(u)]
@@ -79,6 +87,7 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
                     url=chosen,
                     stream_type="hls",
                     headers={"User-Agent": headers["User-Agent"], "Referer": url},
+                    page_title=page_title,
                     all_streams=[{"url": u, "type": "hls"} for u in m3u8_clean]
                 )
 
@@ -90,6 +99,7 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
                     url=mpd_clean[0],
                     stream_type="dash",
                     headers={"User-Agent": headers["User-Agent"], "Referer": url},
+                    page_title=page_title,
                     all_streams=[{"url": u, "type": "dash"} for u in mpd_clean]
                 )
     except Exception:

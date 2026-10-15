@@ -79,6 +79,43 @@ class TestStreamVortex(unittest.TestCase):
         res = sniff_static("https://example.com")
         self.assertIsNone(res)
 
+    def test_sanitize_filename(self):
+        from ytdlp_smartstream.engine import sanitize_filename
+        dirty = 'My Video: "Live Stream" *Exclusive* / Test? <1> | \\'
+        cleaned = sanitize_filename(dirty)
+        for char in r'\/:*?"<>|':
+            self.assertNotIn(char, cleaned)
+        self.assertTrue(len(cleaned) > 0)
+
+    def test_sanitize_title_for_filename(self):
+        from ytdlp_smartstream.engine import sanitize_title_for_filename
+        title = sanitize_title_for_filename("Awesome Stream", uploader="coolcreator", ext="mp4")
+        self.assertEqual(title, "coolcreator - Awesome Stream.mp4")
+
+        # When uploader already in title
+        title2 = sanitize_title_for_filename("coolcreator - Today's Live", uploader="coolcreator", ext="mp4")
+        self.assertEqual(title2, "coolcreator - Today's Live.mp4")
+
+    def test_conf_has_output_template(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import conf_has_output_template
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf") as tf:
+            tf.write("-f best\n-o %(title)s.%(ext)s\n")
+            tf_path = Path(tf.name)
+
+        try:
+            self.assertTrue(conf_has_output_template(tf_path))
+        finally:
+            tf_path.unlink(missing_ok=True)
+
+    def test_find_ytdlp_conf(self):
+        from ytdlp_smartstream.engine import find_ytdlp_conf
+        conf = find_ytdlp_conf()
+        if conf:
+            self.assertTrue(conf.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

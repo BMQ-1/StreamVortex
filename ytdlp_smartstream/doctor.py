@@ -104,7 +104,15 @@ def run_doctor() -> bool:
     else:
         checks.append({"name": "yt-dlp Native Plugin", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Plugin not linked. Run: python install_plugin.py"})
 
-    # 6. Media Player Check
+    # 6. yt-dlp Configuration (.conf) Check
+    from .engine import find_ytdlp_conf
+    conf_file = find_ytdlp_conf()
+    if conf_file and conf_file.exists():
+        checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold green]PASS[/bold green]", "detail": f"Active: {conf_file}"})
+    else:
+        checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold yellow]INFO[/bold yellow]", "detail": "Using standard defaults"})
+
+    # 7. Media Player Check
     mpv_path = shutil.which("mpv")
     vlc_path = shutil.which("vlc")
     player_detail = []

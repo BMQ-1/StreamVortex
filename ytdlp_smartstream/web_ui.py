@@ -23,6 +23,7 @@ from typing import Dict, Any
 
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
 from .sniffer import smart_sniff
+from .engine import find_ytdlp_conf, resolve_stream_metadata, run_ytdlp_download
 from .config import (
     get_config, save_config, get_download_dir,
     get_history, add_history_entry,
@@ -105,6 +106,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </h1>
           <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 mono">
             Powered by yt-dlp
+          </span>
+          <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 mono">
+            Config: __ACTIVE_CONF__
           </span>
         </div>
         <p class="text-xs text-slate-400 mono">v1.0.0 // Intelligent Stream &amp; Live Studio</p>
@@ -342,7 +346,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <button onclick="event.stopPropagation(); navigator.clipboard.writeText('${f.url}'); showToast('URL Copied!');" class="glass hover:bg-white/10 px-2.5 py-1.5 rounded-lg text-xs mono text-cyan-400">
               Copy
             </button>
-            <button onclick="event.stopPropagation(); triggerDownload('${f.url}', '${f.id}', false);" class="btn-gradient px-2.5 py-1.5 rounded-lg text-xs font-bold">
+            <button onclick="event.stopPropagation(); triggerDownload('${f.url}', currentStream ? currentStream.title : '${f.id}', false, currentStream ? currentStream.uploader : '', currentStream ? currentStream.is_live : false);" class="btn-gradient px-2.5 py-1.5 rounded-lg text-xs font-bold" title="Download Format">
               ⬇️
             </button>
           </div>
@@ -376,10 +380,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (!currentStream || !currentStream.formats || !currentStream.formats[0]) return;
       const url = currentStream.formats[0].url;
       const title = currentStream.title || 'stream';
-      await triggerDownload(url, title, type === 'audio');
+      const uploader = currentStream.uploader || '';
+      const isLive = currentStream.is_live !== undefined ? currentStream.is_live : true;
+      await triggerDownload(url, title, type === 'audio', uploader, isLive);
     }
 
-    async function triggerDownload(url, title, isAudio) {
+    async function triggerDownload(url, title, isAudio, uploader, isLive) {
       showToast(`Started download (${isAudio ? 'MP3 Audio' : 'Video'})...`);
       try {
         const resp = await fetch('/api/download', {
@@ -387,7 +393,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             url: url,
-            title: title,
+            title: title || (currentStream ? currentStream.title : ''),
+            uploader: uploader || (currentStream ? currentStream.uploader : ''),
+            is_live: isLive !== undefined ? isLive : (currentStream ? currentStream.is_live : false),
             audio_only: isAudio,
             referer: document.getElementById('streamUrlInput').value
           })
@@ -490,10 +498,13 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
 
         if parsed.path in ["/", "/index.html"]:
+            conf = find_ytdlp_conf()
+            conf_name = conf.name if conf else "Default"
+            html = HTML_TEMPLATE.replace("__ACTIVE_CONF__", conf_name)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+            self.wfile.write(html.encode("utf-8"))
             return
 
         if parsed.path == "/api/resolve":
@@ -504,59 +515,27 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                # TikTok Live
-                if "tiktok.com" in target_url and "/live" in target_url:
-                    import re
-                    m = re.search(r'@([\w.-]+)/live', target_url)
-                    uploader = m.group(1) if m else None
-                    if uploader:
-                        res = resolve_tiktok_live(uploader)
-                        if res and res.formats:
-                            self._send_json({
-                                "id": res.media_id,
-                                "uploader": res.uploader,
-                                "title": res.title,
-                                "is_live": True,
-                                "formats": [
-                                    {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext, "width": f.width}
-                                    for f in res.formats
-                                ]
-                            })
-                            return
-                        else:
-                            self._send_json({"error": f"@{uploader} is currently offline"}, status=404)
-                            return
+                # 1. Resolve using universal metadata resolver (TikTok Live/Video, YouTube, Twitch, etc.)
+                meta = resolve_stream_metadata(target_url)
+                if meta and meta.get("formats"):
+                    self._send_json(meta)
+                    return
 
-                # TikTok Video
-                if "tiktok.com" in target_url and "/video/" in target_url:
-                    res = resolve_tiktok_video(target_url)
-                    if res and res.formats:
-                        self._send_json({
-                            "id": res.media_id,
-                            "uploader": res.uploader,
-                            "title": res.title,
-                            "is_live": False,
-                            "formats": [
-                                {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext, "width": f.width}
-                                for f in res.formats
-                            ]
-                        })
-                        return
-
-                # Universal Sniffer
+                # 2. Universal Sniffer fallback
                 sniffed = smart_sniff(target_url)
                 if sniffed:
                     self._send_json({
                         "id": target_url,
                         "title": sniffed.page_title or "Discovered Stream",
-                        "is_live": True,
+                        "uploader": "",
+                        "is_live": sniffed.stream_type in ("hls", "flv"),
                         "formats": [
                             {"id": f"{sniffed.stream_type}-main", "url": sniffed.url, "protocol": "m3u8_native" if sniffed.stream_type == "hls" else "https", "ext": "mp4"}
                         ]
                     })
                     return
-                else:
-                    self._send_json({"error": "No media stream detected on page"}, status=404)
+
+                self._send_json({"error": "No media stream detected on page or channel is offline."}, status=404)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=500)
             return
@@ -604,25 +583,33 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
             data = json.loads(body)
 
             stream_url = data.get("url")
-            title = data.get("title", "download")
+            title = data.get("title")
+            uploader = data.get("uploader")
             audio_only = data.get("audio_only", False)
             referer = data.get("referer")
+            is_live = data.get("is_live", False)
 
             # Run download asynchronously in worker thread
             def _worker():
-                import time
-                from .engine import run_ytdlp_download
-                d_dir = get_download_dir()
-                safe_title = "".join(c for c in title if c.isalnum() or c in " _-").strip()[:50] or "media"
-                ext = "mp3" if audio_only else "mp4"
-                out_path = d_dir / f"{safe_title}_{int(time.time())}.{ext}"
+                target_title = title
+                target_uploader = uploader
+                target_is_live = is_live
+
+                # If title is missing or generic placeholder, resolve metadata first
+                if not target_title or target_title in ("download", "media", "stream", "Discovered Stream"):
+                    meta = resolve_stream_metadata(stream_url)
+                    target_title = meta.get("title")
+                    target_uploader = meta.get("uploader") or target_uploader
+                    target_is_live = meta.get("is_live", target_is_live)
 
                 run_ytdlp_download(
                     stream_url=stream_url,
-                    output_filename=str(out_path),
+                    title=target_title,
+                    uploader=target_uploader,
                     referer=referer,
                     audio_only=audio_only,
-                    is_live=data.get("is_live", True)
+                    is_live=target_is_live,
+                    respect_conf_output=True
                 )
 
             threading.Thread(target=_worker, daemon=True).start()

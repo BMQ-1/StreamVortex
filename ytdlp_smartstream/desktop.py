@@ -23,7 +23,7 @@ except ImportError:
     HAS_TTKBOOTSTRAP = False
 
 from .setup_binaries import setup_all_binaries, get_bin_dir
-from .engine import find_ytdlp, find_ffmpeg, run_ytdlp_download
+from .engine import find_ytdlp, find_ffmpeg, run_ytdlp_download, run_ffmpeg_record, resolve_stream_metadata, find_ytdlp_conf
 from .config import get_download_dir, add_history_entry
 from .sniffer import smart_sniff
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
@@ -117,6 +117,9 @@ class StreamVortexApp:
 
         self.driver_status_lbl = tb.Label(status_grid, text="Playwright: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="Playwright: Checking...", fg="#94a3b8", bg="#1e293b")
         self.driver_status_lbl.pack(side="left", padx=15)
+
+        self.conf_status_lbl = tb.Label(status_grid, text="Config: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="Config: Checking...", fg="#94a3b8", bg="#1e293b")
+        self.conf_status_lbl.pack(side="left", padx=15)
 
         self.setup_btn = tb.Button(
             status_grid,
@@ -217,9 +220,15 @@ class StreamVortexApp:
             except Exception:
                 pw_text = "Playwright: Missing Driver"
 
+            # Check yt-dlp config
+            from .engine import find_ytdlp_conf
+            conf = find_ytdlp_conf()
+            conf_text = f"Config: {conf.name}" if conf else "Config: Default"
+
             self.root.after(0, lambda: self.ytdlp_status_lbl.config(text=ytdlp_text, bootstyle="success" if ytdlp else "danger"))
             self.root.after(0, lambda: self.ffmpeg_status_lbl.config(text=ffmpeg_text, bootstyle="success" if ffmpeg else "warning"))
             self.root.after(0, lambda: self.driver_status_lbl.config(text=pw_text, bootstyle="success" if "Ready" in pw_text else "warning"))
+            self.root.after(0, lambda: self.conf_status_lbl.config(text=conf_text, bootstyle="success" if conf else "secondary"))
 
         threading.Thread(target=_check, daemon=True).start()
 
@@ -262,15 +271,29 @@ class StreamVortexApp:
             self._log("[Error] Please enter a URL.")
             return
 
-        self._log(f"\n[Download] Executing yt-dlp download for: {url}")
-        d_dir = get_download_dir()
-        out_file = str(d_dir / "%(title)s.%(ext)s")
+        self._log(f"\n[Download] Resolving media info for: {url}")
 
         def _worker():
+            meta = resolve_stream_metadata(url)
+            title = meta.get("title")
+            uploader = meta.get("uploader")
+            is_live = meta.get("is_live", False)
+            self.root.after(0, lambda: self._log(f"[Metadata] Title: '{title}'" + (f" | Creator: @{uploader}" if uploader else "") + f" | Live: {is_live}"))
+            self.root.after(0, lambda: self._log("[Download] Starting yt-dlp download..."))
+
             def on_out(line):
                 self.root.after(0, lambda l=line: self._log(f"[yt-dlp] {l}"))
-            run_ytdlp_download(url, out_file, is_live=True, on_output=on_out)
-            self.root.after(0, lambda: self._log(f"[Done] Download completed! Saved to: {d_dir}"))
+
+            run_ytdlp_download(
+                stream_url=url,
+                title=title,
+                uploader=uploader,
+                is_live=is_live,
+                on_output=on_out,
+                respect_conf_output=True
+            )
+            d_dir = get_download_dir()
+            self.root.after(0, lambda: self._log(f"[Done] Download completed! Target directory: {d_dir}"))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_record_click(self):
@@ -279,13 +302,16 @@ class StreamVortexApp:
             self._log("[Error] Please enter a live URL.")
             return
 
-        import time
-        d_dir = get_download_dir()
-        out_file = str(d_dir / f"stream_{int(time.time())}.mp4")
-        self._log(f"\n[Record] Starting live FFmpeg capture to: {out_file}")
+        self._log(f"\n[Record] Resolving stream for live recording: {url}")
 
         def _worker():
-            # If TikTok, resolve live format first
+            meta = resolve_stream_metadata(url)
+            title = meta.get("title")
+            uploader = meta.get("uploader")
+            formats = meta.get("formats", [])
+            stream_target = url
+            headers = None
+
             if "tiktok.com" in url:
                 import re
                 m = re.search(r'@([\w.-]+)', url)
@@ -293,9 +319,14 @@ class StreamVortexApp:
                     res = resolve_tiktok_live(m.group(1))
                     if res and res.formats:
                         hls = next((f for f in res.formats if f.protocol == "m3u8_native"), res.formats[0])
-                        record_stream(hls.url, out_file, headers=res.http_headers)
-                        return
-            record_stream(url, out_file)
+                        stream_target = hls.url
+                        headers = res.http_headers
+                        title = res.title
+                        uploader = res.uploader
+
+            self.root.after(0, lambda: self._log(f"[Record] Capturing '{title}' by @{uploader or 'stream'} via FFmpeg..."))
+            run_ffmpeg_record(stream_target, headers=headers, title=title, uploader=uploader)
+            self.root.after(0, lambda: self._log("[Done] Live recording saved to downloads directory!"))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_audio_click(self):
@@ -304,15 +335,28 @@ class StreamVortexApp:
             self._log("[Error] Please enter a URL.")
             return
 
-        d_dir = get_download_dir()
-        out_file = str(d_dir / "%(title)s.%(ext)s")
-        self._log(f"\n[Audio] Extracting MP3 audio track via yt-dlp...")
+        self._log(f"\n[Audio] Resolving media info for MP3 extraction: {url}")
 
         def _worker():
+            meta = resolve_stream_metadata(url)
+            title = meta.get("title")
+            uploader = meta.get("uploader")
+            self.root.after(0, lambda: self._log(f"[Metadata] Title: '{title}'" + (f" | Creator: @{uploader}" if uploader else "")))
+            self.root.after(0, lambda: self._log("[Audio] Extracting high-bitrate MP3 audio track..."))
+
             def on_out(line):
                 self.root.after(0, lambda l=line: self._log(f"[yt-dlp] {l}"))
-            run_ytdlp_download(url, out_file, audio_only=True, on_output=on_out)
-            self.root.after(0, lambda: self._log(f"[Done] MP3 Audio saved to: {d_dir}"))
+
+            run_ytdlp_download(
+                stream_url=url,
+                title=title,
+                uploader=uploader,
+                audio_only=True,
+                on_output=on_out,
+                respect_conf_output=True
+            )
+            d_dir = get_download_dir()
+            self.root.after(0, lambda: self._log(f"[Done] MP3 Audio saved! Target directory: {d_dir}"))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_play_click(self):

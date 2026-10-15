@@ -31,6 +31,7 @@ from .sniffer import smart_sniff
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video, TikTokMediaResult
 from .recorder import copy_to_clipboard, send_notification, record_stream, wait_for_live
 from .web_ui import launch_web_ui
+from .engine import find_ytdlp_conf, sanitize_title_for_filename, run_ytdlp_download, resolve_stream_metadata
 
 console = Console()
 
@@ -44,10 +45,12 @@ BANNER = """
 """
 
 
-def print_banner():
+def print_banner(conf_path: Optional[str] = None):
+    conf = Path(conf_path) if conf_path else find_ytdlp_conf()
+    conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle="[bold white]v1.0.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]",
+        subtitle=f"[bold white]v1.0.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -103,6 +106,7 @@ def main():
     parser.add_argument("--wizard", action="store_true", help="Launch beginner-friendly interactive menu")
     parser.add_argument("--m3u8-only", "-m", action="store_true", help="Print only raw stream URL (for piping)")
     parser.add_argument("--json", "-j", action="store_true", help="Output stream metadata in structured JSON")
+    parser.add_argument("--conf", "-C", default=None, help="Path to custom yt-dlp.conf configuration file")
     parser.add_argument("--timeout", "-t", type=int, default=15, help="Timeout in seconds for stream discovery")
     parser.add_argument("--output", "-o", default=None, help="Output filename for recordings")
 
@@ -162,7 +166,7 @@ def main():
     is_tiktok_video = "tiktok.com" in url and "/video/" in url
 
     if not args.m3u8_only and not args.json:
-        print_banner()
+        print_banner(conf_path=args.conf)
 
     # Watchdog wait mode
     if args.wait and is_tiktok_live:
@@ -173,8 +177,8 @@ def main():
             if args.copy:
                 copy_to_clipboard(hls.url)
             if args.record:
-                out_name = args.output or f"{uploader}_live_{int(sys.time.time())}.mp4"
-                record_stream(hls.url, out_name, headers=res.http_headers)
+                out_name = args.output or sanitize_title_for_filename(res.title, uploader=uploader, ext="mp4")
+                record_stream(hls.url, out_name, headers=res.http_headers, title=res.title, uploader=uploader)
             elif args.play:
                 _play(hls.url)
         wait_for_live(uploader, poll_interval=10, on_live_start=on_live)
@@ -226,17 +230,20 @@ def main():
             console.print(f"\n[bold green][+] Copied .m3u8 URL to clipboard![/bold green]")
 
         if args.record:
-            out_file = args.output or f"{result.uploader}_live.mp4"
-            record_stream(best_format.url, out_file, headers=result.http_headers)
+            out_file = args.output or sanitize_title_for_filename(result.title, uploader=result.uploader, ext="mp4")
+            record_stream(best_format.url, out_file, headers=result.http_headers, title=result.title, uploader=result.uploader)
             return
 
         if args.download or args.audio:
             _download(
                 best_format.url,
-                args.output or f"{result.uploader}_live.mp4",
+                output_name=args.output,
                 referer=f"https://www.tiktok.com/@{result.uploader}/live",
                 audio_only=args.audio,
-                is_live=True
+                is_live=True,
+                title=result.title,
+                uploader=result.uploader,
+                conf_path=args.conf
             )
             return
 
@@ -274,19 +281,42 @@ def main():
         if args.download or args.audio:
             _download(
                 best_format.url,
-                args.output or f"tiktok_{result.media_id}.mp4",
+                output_name=args.output,
                 referer=url,
-                audio_only=args.audio
+                audio_only=args.audio,
+                title=result.title,
+                uploader=result.uploader,
+                conf_path=args.conf
             )
         elif args.play:
             _play(best_format.url)
         return
 
-    # Universal Sniffer
+    # Universal Sniffer & Multi-Platform Resolver
     with console.status(f"[bold cyan]Sniffing media wire for {url}...[/bold cyan]"):
         sniffed = smart_sniff(url, timeout=args.timeout)
 
     if not sniffed:
+        meta = resolve_stream_metadata(url, timeout=args.timeout)
+        if meta and meta.get("title") != "stream_media" and (args.download or args.audio or args.play):
+            console.print(f"\n[bold green][+] RECOGNIZED MEDIA TARGET:[/bold green] [bold white]{meta['title']}[/bold white]")
+            if meta.get("uploader"):
+                console.print(f"[dim]Uploader:[/dim] @{meta['uploader']}")
+            if args.download or args.audio:
+                _download(
+                    url,
+                    output_name=args.output,
+                    referer=url,
+                    audio_only=args.audio,
+                    is_live=meta.get("is_live", False),
+                    title=meta.get("title"),
+                    uploader=meta.get("uploader"),
+                    conf_path=args.conf
+                )
+                return
+            elif args.play:
+                _play(url)
+                return
         console.print("[red][-] No active HLS/FLV/DASH stream detected on page.[/red]", file=sys.stderr)
         sys.exit(1)
 
@@ -313,16 +343,19 @@ def main():
         console.print("[bold green][+] Stream URL copied to clipboard![/bold green]")
 
     if args.record:
-        record_stream(sniffed.url, args.output or "live_stream.mp4", headers=sniffed.headers)
+        out_file = args.output or sanitize_title_for_filename(sniffed.page_title or "live_stream", ext="mp4")
+        record_stream(sniffed.url, out_file, headers=sniffed.headers, title=sniffed.page_title)
         return
 
     if args.download or args.audio:
         _download(
             sniffed.url,
-            args.output or "download.mp4",
+            output_name=args.output,
             referer=url,
             audio_only=args.audio,
-            is_live=sniffed.stream_type in ("hls", "flv")
+            is_live=sniffed.stream_type in ("hls", "flv"),
+            title=sniffed.page_title,
+            conf_path=args.conf
         )
         return
 
@@ -345,23 +378,28 @@ def _play(stream_url: str, user_agent: Optional[str] = None):
     subprocess.run(cmd)
 
 
-from .engine import run_ytdlp_download
-
-
 def _download(
     stream_url: str,
-    output_name: str,
+    output_name: Optional[str] = None,
     referer: Optional[str] = None,
     audio_only: bool = False,
-    is_live: bool = False
+    is_live: bool = False,
+    title: Optional[str] = None,
+    uploader: Optional[str] = None,
+    conf_path: Optional[str] = None
 ):
     console.print(f"[bold cyan]Running download via yt-dlp ({'MP3 Audio' if audio_only else 'Video'})...[/bold cyan]")
+    if title:
+        console.print(f"[dim]Title:[/dim] [bold white]{title}[/bold white]")
     run_ytdlp_download(
         stream_url=stream_url,
         output_filename=output_name,
         referer=referer,
         audio_only=audio_only,
-        is_live=is_live
+        is_live=is_live,
+        title=title,
+        uploader=uploader,
+        conf_path=conf_path
     )
 
 
