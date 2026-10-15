@@ -59,6 +59,7 @@ def run_wizard():
         choice = questionary.select(
             "What would you like to do?",
             choices=[
+                "🖥️ Open Modern Desktop GUI Studio (Full Window)",
                 "⚡ Quick Stream Sniffer & Downloader (Paste any URL)",
                 "🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)",
                 "📑 Batch URL Sequential Downloader (Multiple links)",
@@ -83,6 +84,12 @@ def run_wizard():
         if not choice or "Exit" in choice:
             console.print("\n[dim]Goodbye! Happy streaming.[/dim]\n")
             break
+
+        if "Desktop GUI" in choice:
+            from .desktop import launch_desktop_gui
+            console.print("\n[bold cyan]Launching Modern Desktop GUI Studio...[/bold cyan]")
+            launch_desktop_gui()
+            continue
 
         if "Web Dashboard" in choice or "Web Studio" in choice:
             console.print("\n[bold cyan]Starting local Web Dashboard at http://127.0.0.1:8765 ...[/bold cyan]")

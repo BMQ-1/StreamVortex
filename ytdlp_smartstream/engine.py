@@ -738,7 +738,7 @@ def clean_target_url(url: str) -> str:
     """
     if not url:
         return ""
-    url = url.strip().strip(''"<>')
+    url = url.strip().strip("'\"<>")
     # Prevent option injection if URL starts with dashes
     while url.startswith("-"):
         url = url.lstrip("-").strip()

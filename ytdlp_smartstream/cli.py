@@ -105,6 +105,7 @@ def main():
     parser.add_argument("--audio", "-a", action="store_true", help="Extract audio only (MP3) from stream or video")
     parser.add_argument("--doctor", action="store_true", help="Run system diagnostics and dependency check")
     parser.add_argument("--wizard", action="store_true", help="Launch beginner-friendly interactive menu")
+    parser.add_argument("--cli", action="store_true", help="Launch interactive terminal wizard")
     parser.add_argument("--m3u8-only", "-m", action="store_true", help="Print only raw stream URL (for piping)")
     parser.add_argument("--json", "-j", action="store_true", help="Output stream metadata in structured JSON")
     parser.add_argument("--conf", "-C", default=None, help="Path to custom yt-dlp.conf configuration file")
@@ -183,19 +184,45 @@ def main():
         run_wizard()
         return
 
-    # Default fallback when no URL or flags provided:
-    # If in an interactive terminal, open wizard; otherwise launch Desktop GUI!
-    if not args.url.strip() and not args.m3u8_only and not args.json:
-        if sys.stdin and sys.stdin.isatty():
-            try:
-                from .wizard import run_wizard
-                run_wizard()
-                return
-            except Exception:
-                pass
-        from .desktop import launch_desktop_gui
-        launch_desktop_gui()
+    # Explicit terminal wizard mode
+    if args.wizard or getattr(args, "cli", False):
+        from .wizard import run_wizard
+        run_wizard()
         return
+
+    # Default fallback when no URL or flags provided:
+    # Launches Desktop Studio GUI by default with a modern informational startup card.
+    if not args.url.strip() and not args.m3u8_only and not args.json:
+        from .engine import find_ytdlp, find_ffmpeg, find_ytdlp_conf, get_conf_download_dir
+        conf = find_ytdlp_conf()
+        conf_label = conf.name if conf else "Auto-generated (.conf)"
+        d_dir = get_conf_download_dir()
+        ytdlp_ready = bool(find_ytdlp())
+        ffmpeg_ready = bool(find_ffmpeg())
+
+        print_banner(conf_path=str(conf) if conf else None)
+        console.print(
+            Panel(
+                f"[bold cyan]⚡ StreamVortex v1.0[/bold cyan] [bold white][Standalone Desktop Edition][/bold white]\n"
+                f"[dim]• Engine Status:[/dim] [green]yt-dlp[/green] {'[bold green]✓ Ready[/bold green]' if ytdlp_ready else '[bold red]✗ Missing (Click Setup Wizard)[/bold red]'}   "
+                f"[green]FFmpeg[/green] {'[bold green]✓ Ready[/bold green]' if ffmpeg_ready else '[bold yellow]✗ Missing[/bold yellow]'}   "
+                f"[cyan]Config:[/cyan] [bold yellow]{conf_label}[/bold yellow]\n"
+                f"[dim]• Destination:[/dim] [bold green]{d_dir}[/bold green]\n"
+                f"[dim]• Studio Interface:[/dim] [bold magenta]Launching Modern Dark-Mode GUI Window...[/bold magenta]\n\n"
+                f"[dim italic]Tip: Run with --wizard for terminal menu, --web for Browser Studio, or <url> to download directly.[/dim italic]",
+                title="[bold bright_blue]SYSTEM STATUS & STUDIO LAUNCHER[/bold bright_blue]",
+                border_style="bright_blue"
+            )
+        )
+        try:
+            from .desktop import launch_desktop_gui
+            launch_desktop_gui()
+            return
+        except Exception as e:
+            console.print(f"[yellow][!] Desktop GUI could not be initialized ({e}). Falling back to interactive wizard...[/yellow]")
+            from .wizard import run_wizard
+            run_wizard()
+            return
 
     url = args.url.strip()
 
