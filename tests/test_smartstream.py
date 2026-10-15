@@ -164,6 +164,21 @@ class TestStreamVortex(unittest.TestCase):
                 self.assertIn("-o", content)
                 self.assertIn("av01", content)
 
+    def test_deploy_embedded_ytdlp_conf(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import deploy_embedded_ytdlp_conf
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            conf_deployed = deploy_embedded_ytdlp_conf(target_dir=td_path)
+            self.assertIsNotNone(conf_deployed)
+            self.assertTrue(conf_deployed.exists())
+            self.assertEqual(conf_deployed.name, "yt-dlp.conf")
+            content = conf_deployed.read_text(encoding="utf-8")
+            self.assertIn("-o", content)
+            self.assertIn("av01", content)
+
     def test_update_ytdlp_conf_destinations(self):
         import tempfile
         from pathlib import Path

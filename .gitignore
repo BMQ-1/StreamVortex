@@ -70,6 +70,8 @@ recordings/
 .streamvortex/
 *.log
 logs/
+*.conf
+yt-dlp.conf
 
 # Sensitive Secrets & Environment Variables
 .env
