@@ -57,7 +57,7 @@ def run_wizard():
         )
 
         choice = questionary.select(
-            "What would you like to do?",
+            "What would you like to do? (Use ↑/↓ arrow keys to navigate, Enter to select)",
             choices=[
                 "🖥️ Open Modern Desktop GUI Studio (Full Window)",
                 "⚡ Quick Stream Sniffer & Downloader (Paste any URL)",
