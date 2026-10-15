@@ -1,29 +1,45 @@
-# Byte-compiled / optimized / DLL files
+# ==============================================================================
+# StreamVortex .gitignore
+# Covers Python, PyInstaller binaries, Playwright, media, logs, and OS files
+# ==============================================================================
+
+# Python Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
-# Distribution / packaging
+# Distribution / packaging / PyInstaller artifacts
 build/
 dist/
 bin/
 *.exe
+*.dll
+*.dylib
+*.bin
 *.spec
+*.manifest
 *.egg-info/
 .eggs/
 *.egg
+*.whl
+*.tar.gz
 
 # Virtual environments
 venv/
 env/
 .venv/
 ENV/
+env.bak/
+venv.bak/
 
-# Playwright & browser artifacts
+# Playwright & browser caching
 .playwright/
 test-results/
+playwright-report/
+.cache/
 
-# User downloaded media (do not commit test video files)
+# User downloaded media (prevent accidental commit of test streams & downloads)
 *.mp4
 *.mkv
 *.flv
@@ -31,23 +47,34 @@ test-results/
 *.ts
 *.part
 *.ytdl
+*.aria2
 *.mp3
 *.m4a
 *.aac
+*.wav
+*.webm
+*.ogg
+*.opus
 *.jpg
 *.jpeg
 *.png
 *.webp
+*.gif
 
-# StreamVortex user runtime config & history
+# StreamVortex user runtime config, history & logs
 .streamvortex/
+*.log
+logs/
 
-# IDE / Editor
+# IDE / Editor directories & files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
 
 # Operating System files
 Thumbs.db
@@ -55,8 +82,12 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+._*
 
-# Pytest / Coverage
+# Testing, Type Checking & Code Coverage
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.mypy_cache/
+.ruff_cache/

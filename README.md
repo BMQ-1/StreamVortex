@@ -1,11 +1,24 @@
 # ⚡ StreamVortex: Intelligent Stream Sniffer & Downloader Engine for yt-dlp
 
 <p align="center">
-  <img src="https://img.shields.io/badge/StreamVortex-v1.0.0-00f2fe?style=for-the-badge&logo=fastapi&logoColor=black" alt="Version" />
-  <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube" alt="yt-dlp" />
-  <img src="https://img.shields.io/badge/Python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue?style=for-the-badge&logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-purple?style=for-the-badge" alt="Platform" />
+  <a href="https://github.com/BMQ-1/StreamVortex/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/BMQ-1/StreamVortex/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI Status" />
+  </a>
+  <a href="https://github.com/BMQ-1/StreamVortex/releases">
+    <img src="https://img.shields.io/badge/Release-v1.0.0-00f2fe?style=for-the-badge&logo=github" alt="Release" />
+  </a>
+  <a href="https://github.com/yt-dlp/yt-dlp">
+    <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube" alt="yt-dlp" />
+  </a>
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-success?style=for-the-badge" alt="License" />
+  </a>
+  <a href="https://github.com/BMQ-1/StreamVortex">
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-purple?style=for-the-badge" alt="Platform" />
+  </a>
 </p>
 
 > **Universal Stream Intelligence Studio, Live Watchdog, Modern Desktop GUI & Native yt-dlp Plugin Engine**
@@ -63,7 +76,7 @@ It operates seamlessly in **4 distinct modes**:
 ## 🚀 Quick Start
 
 ### Option 1: Standalone Windows Executable (No Python Required)
-1. Download **`StreamVortex.exe`** from the **[Releases](https://github.com/basel-shweikani/StreamVortex/releases)** tab.
+1. Download **`StreamVortex.exe`** from the **[Releases](https://github.com/BMQ-1/StreamVortex/releases)** tab.
 2. Double-click `StreamVortex.exe`.
 3. If it is your first time, the **Zero-Setup Wizard** will offer to auto-configure `yt-dlp` and `ffmpeg` into `C:\Tools` in under 60 seconds.
 
@@ -86,7 +99,7 @@ Double-click `Launch StreamVortex.bat` in the project folder to open the guided 
 
 ```bash
 # Clone the repository
-git clone https://github.com/basel-shweikani/StreamVortex.git
+git clone https://github.com/BMQ-1/StreamVortex.git
 cd StreamVortex
 
 # Install StreamVortex in editable mode with dependencies

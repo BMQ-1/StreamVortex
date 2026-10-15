@@ -3,6 +3,7 @@ Unit and integration tests for StreamVortex.
 """
 
 import unittest
+from unittest.mock import patch
 from ytdlp_smartstream.sniffer import sniff_static
 from ytdlp_smartstream.tiktok_resolver import (
     _parse_stream_data_json,
@@ -71,7 +72,9 @@ class TestStreamVortex(unittest.TestCase):
         self.assertTrue(res.is_live)
         self.assertEqual(len(res.formats), 1)
 
-    def test_copy_to_clipboard(self):
+    @patch("ytdlp_smartstream.recorder.pyperclip.copy", create=True)
+    def test_copy_to_clipboard(self, mock_copy):
+        mock_copy.return_value = None
         success = copy_to_clipboard("https://pull-hls.example.com/test.m3u8")
         self.assertTrue(success)
 
