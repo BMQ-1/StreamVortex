@@ -95,6 +95,8 @@ def main():
     parser.add_argument("--play", "-p", action="store_true", help="Play stream in MPV or VLC player")
     parser.add_argument("--copy", "-c", action="store_true", help="Copy extracted stream URL directly to clipboard")
     parser.add_argument("--wait", "-w", action="store_true", help="Watchdog mode: wait until channel goes live, then alert/record")
+    parser.add_argument("--gui", "-g", action="store_true", help="Launch modern dark-mode Desktop GUI window")
+    parser.add_argument("--setup", action="store_true", help="Download and verify official yt-dlp, FFmpeg, and Playwright binaries")
     parser.add_argument("--web", action="store_true", help="Launch the local Dark-Mode Web UI with embedded HLS player")
     parser.add_argument("--audio", "-a", action="store_true", help="Extract audio only (MP3) from stream or video")
     parser.add_argument("--doctor", action="store_true", help="Run system diagnostics and dependency check")
@@ -105,6 +107,18 @@ def main():
     parser.add_argument("--output", "-o", default=None, help="Output filename for recordings")
 
     args = parser.parse_args()
+
+    # Binary setup & dependency provisioner
+    if args.setup:
+        from .setup_binaries import setup_all_binaries
+        setup_all_binaries()
+        return
+
+    # Modern Desktop GUI window
+    if args.gui:
+        from .desktop import launch_desktop_gui
+        launch_desktop_gui()
+        return
 
     # Doctor check
     if args.doctor:
@@ -117,13 +131,31 @@ def main():
         launch_web_ui()
         return
 
-    # Wizard mode (explicit or when no URL and no other flags passed)
-    if args.wizard or (not args.url.strip() and not args.m3u8_only and not args.json):
+    # Explicit wizard mode
+    if args.wizard:
         from .wizard import run_wizard
         run_wizard()
         return
 
+    # Default fallback when no URL or flags provided:
+    # If in an interactive terminal, open wizard; otherwise launch Desktop GUI!
+    if not args.url.strip() and not args.m3u8_only and not args.json:
+        if sys.stdin and sys.stdin.isatty():
+            try:
+                from .wizard import run_wizard
+                run_wizard()
+                return
+            except Exception:
+                pass
+        from .desktop import launch_desktop_gui
+        launch_desktop_gui()
+        return
+
     url = args.url.strip()
+
+    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("smart:")):
+        console.print(f"[red][!] Invalid URL format: '{url}'. Please enter a full URL (e.g. https://www.tiktok.com/@username/live)[/red]")
+        return
 
     # Check for TikTok Live
     is_tiktok_live = "tiktok.com" in url and "/live" in url

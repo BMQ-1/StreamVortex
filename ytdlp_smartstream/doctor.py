@@ -4,6 +4,7 @@ Verifies dependencies, media runtimes, browser drivers, and yt-dlp plugin status
 """
 
 import sys
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -66,14 +67,33 @@ def run_doctor() -> bool:
         all_ok = False
 
     # 4. Playwright Chromium Check
+    if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+        appdata_local = os.environ.get("LOCALAPPDATA", "")
+        if appdata_local:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(Path(appdata_local) / "ms-playwright")
+
+    pw_ok = False
+    pw_detail = ""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             b = p.chromium.launch(headless=True)
             b.close()
-        checks.append({"name": "Playwright / Chromium", "status": "[bold green]PASS[/bold green]", "detail": "Chromium headless driver ready"})
-    except Exception as e:
-        checks.append({"name": "Playwright / Chromium", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Chromium driver missing. Run: playwright install chromium"})
+        pw_ok = True
+        pw_detail = "Chromium headless driver ready"
+    except Exception:
+        appdata_local = os.environ.get("LOCALAPPDATA", "")
+        ms_pw = Path(appdata_local) / "ms-playwright"
+        if ms_pw.exists() and any(ms_pw.glob("chromium*")):
+            pw_ok = True
+            pw_detail = "Chromium driver verified in LocalAppData"
+        else:
+            pw_detail = "Chromium driver missing. Run: playwright install chromium"
+
+    if pw_ok:
+        checks.append({"name": "Playwright / Chromium", "status": "[bold green]PASS[/bold green]", "detail": pw_detail})
+    else:
+        checks.append({"name": "Playwright / Chromium", "status": "[bold yellow]WARN[/bold yellow]", "detail": pw_detail})
 
     # 5. Native yt-dlp Plugin Registration Check
     config_dirs = list(get_user_config_dirs("yt-dlp"))

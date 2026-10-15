@@ -41,6 +41,12 @@ def __getattr__(name: str):
     if name == "launch_web_ui":
         from .web_ui import launch_web_ui
         return launch_web_ui
+    if name == "launch_desktop_gui":
+        from .desktop import launch_desktop_gui
+        return launch_desktop_gui
+    if name == "setup_all_binaries":
+        from .setup_binaries import setup_all_binaries
+        return setup_all_binaries
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [

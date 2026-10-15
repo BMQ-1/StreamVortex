@@ -17,9 +17,17 @@ from .config import get_download_dir, get_config, add_history_entry
 def find_ytdlp() -> List[str]:
     """
     Finds the most reliable yt-dlp executable or Python module runner.
-    Returns command prefix (e.g. ['yt-dlp'] or ['python', '-m', 'yt_dlp']).
+    Prioritizes local bin/yt-dlp.exe, then C:\Tools, then PATH.
     """
-    # 1. Check C:\Tools\yt-dlp.exe (user preferred tool folder)
+    # 0. Check local bin/yt-dlp.exe
+    if getattr(sys, "frozen", False):
+        local_bin = Path(sys.executable).parent / "bin" / "yt-dlp.exe"
+    else:
+        local_bin = Path(__file__).resolve().parent.parent / "bin" / "yt-dlp.exe"
+    if local_bin.exists():
+        return [str(local_bin)]
+
+    # 1. Check C:\Tools\yt-dlp.exe
     tool_bin = Path("C:/Tools/yt-dlp.exe")
     if tool_bin.exists():
         return [str(tool_bin)]
@@ -35,8 +43,16 @@ def find_ytdlp() -> List[str]:
 
 def find_ffmpeg() -> Optional[str]:
     """
-    Locates FFmpeg executable across PATH, C:\\Tools, and common locations.
+    Locates FFmpeg executable across local bin/, C:\Tools, and system PATH.
     """
+    # 0. Check local bin/ffmpeg.exe
+    if getattr(sys, "frozen", False):
+        local_bin = Path(sys.executable).parent / "bin" / "ffmpeg.exe"
+    else:
+        local_bin = Path(__file__).resolve().parent.parent / "bin" / "ffmpeg.exe"
+    if local_bin.exists():
+        return str(local_bin)
+
     # 1. Check C:\Tools\ffmpeg.exe
     tool_bin = Path("C:/Tools/ffmpeg.exe")
     if tool_bin.exists():
