@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamvortex"
+version = "1.0.0"
+description = "StreamVortex: Resilient HLS/DASH/VOD stream intelligence & live watchdog engine for yt-dlp"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "StreamVortex Team" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "yt-dlp>=2024.01.01",
+    "playwright>=1.40.0",
+    "rich>=13.0.0",
+    "pyperclip>=1.8.0",
+    "winotify>=1.1.0; platform_system=='Windows'",
+]
+
+[project.scripts]
+streamvortex = "ytdlp_smartstream.cli:main"
+smart-stream = "ytdlp_smartstream.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["yt_dlp_plugins*", "ytdlp_smartstream*"]
