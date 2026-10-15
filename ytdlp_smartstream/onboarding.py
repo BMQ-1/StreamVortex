@@ -27,6 +27,7 @@ from .config import get_config, save_config, get_download_dir
 
 YTDLP_RELEASE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 FFMPEG_RELEASE_URL = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+ARIA2C_RELEASE_URL = "https://github.com/q3aql/aria2-static-builds/releases/download/v1.37.0/aria2-1.37.0-win-64bit-build1.zip"
 PYTHON_INSTALLER_URL = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 VLC_INSTALLER_URL = "https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.exe"
 
@@ -36,9 +37,9 @@ DEFAULT_YTDLP_CONF_TEMPLATE = """# =============================================
 # ========================================================
 
 # ===== OUTPUT DIRECTORY & NAMING =====
--o "{videos_dir}\\%(playlist|Singles)s\\%(title).70B_%(epoch)s.%(ext)s"
--o "subtitle:{videos_dir}\\%(playlist|Singles)s\\Subs\\%(title).70B_%(epoch)s.%(ext)s"
--o "thumbnail:{videos_dir}\\%(playlist|Singles)s\\Thumbnails\\%(title).70B_%(epoch)s.%(ext)s"
+-o "{downloads_dir}\\%(playlist|)s\\%(title).70B_%(epoch)s.%(ext)s"
+-o "subtitle:{downloads_dir}\\Subs\\%(title).70B_%(epoch)s.%(ext)s"
+-o "thumbnail:{downloads_dir}\\Thumbnails\\%(title).70B_%(epoch)s.%(ext)s"
 
 # ===== FORMAT QUALITY PRIORITY =====
 # Intelligent fallback: 2K -> 1080p -> Best available
@@ -73,14 +74,6 @@ DEFAULT_YTDLP_CONF_TEMPLATE = """# =============================================
 --no-mtime
 --console-title
 --progress
-"""
-
-DEFAULT_TIKTOK_LIVE_CONF_TEMPLATE = """# ========================================================
-# StreamVortex TikTok Live Extraction Preset
-# ========================================================
---downloader ffmpeg
---downloader-args ffmpeg_i:"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 30"
--o "{videos_dir}\\TikTok\\%(uploader)s_%(timestamp)s.%(ext)s"
 """
 
 
@@ -285,29 +278,102 @@ def install_ffmpeg_suite(tools_dir: Path, callback: Optional[Callable[[str, floa
         return False, f"Extraction error: {e}"
 
 
-def install_optimized_configs(tools_dir: Path, callback: Optional[Callable[[str, float], None]] = None) -> Tuple[bool, str]:
-    """Writes the user-recommended yt-dlp.conf and tiktok-live.conf.txt next to yt-dlp.exe."""
-    videos_dir = tools_dir / "Videos"
-    videos_dir.mkdir(parents=True, exist_ok=True)
-    (videos_dir / "TikTok").mkdir(parents=True, exist_ok=True)
+def install_aria2c_engine(tools_dir: Path, callback: Optional[Callable[[str, float], None]] = None) -> Tuple[bool, str]:
+    """
+    Downloads the official portable aria2c.exe download accelerator and places it next to yt-dlp.exe.
+    This enables yt-dlp's 16-connection multi-threaded acceleration configured in yt-dlp.conf.
+    """
+    from .engine import find_aria2c
+    existing = find_aria2c()
+    if existing:
+        if callback:
+            callback(f"[+] aria2c accelerator already available: {existing}", 100.0)
+        return True, existing
 
-    conf_path = tools_dir / "yt-dlp.conf"
-    tiktok_conf_path = tools_dir / "tiktok-live.conf.txt"
+    zip_path = tools_dir / "aria2_temp.zip"
+    aria2_exe = tools_dir / "aria2c.exe"
 
-    conf_content = DEFAULT_YTDLP_CONF_TEMPLATE.replace("{videos_dir}", str(videos_dir))
-    tiktok_conf_content = DEFAULT_TIKTOK_LIVE_CONF_TEMPLATE.replace("{videos_dir}", str(videos_dir))
+    if callback:
+        callback("Downloading official portable aria2c download accelerator...", 10.0)
+
+    success = download_file_with_feedback(
+        ARIA2C_RELEASE_URL,
+        zip_path,
+        label="aria2c Accelerator",
+        callback=callback
+    )
+    if not success:
+        return False, "Failed to download aria2c archive."
 
     try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for member in z.namelist():
+                if member.endswith("aria2c.exe"):
+                    with z.open(member) as src, open(aria2_exe, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    break
+        if zip_path.exists():
+            zip_path.unlink()
+        if aria2_exe.exists():
+            if callback:
+                callback(f"[+] Installed aria2c.exe into {tools_dir}!", 100.0)
+            return True, str(aria2_exe)
+    except Exception as e:
+        return False, f"aria2c extraction error: {e}"
+
+    return False, "aria2c.exe not found in downloaded archive."
+
+
+def install_optimized_configs(
+    tools_dir: Path,
+    downloads_dir: Optional[Path] = None,
+    callback: Optional[Callable[[str, float], None]] = None
+) -> Tuple[bool, str]:
+    """
+    Deploys the standard yt-dlp.conf directly next to yt-dlp.exe in tools_dir (e.g. C:\\Tools\\yt-dlp.conf).
+    This establishes yt-dlp's native portable configuration globally, ensuring yt-dlp works
+    consistently from any command prompt across the entire PC even if StreamVortex is deleted.
+    Outputs are dynamically configured to the user's chosen downloads directory (default: ~/Downloads).
+    """
+    target_dl = (downloads_dir or get_download_dir()).expanduser().resolve()
+    target_dl.mkdir(parents=True, exist_ok=True)
+
+    conf_path = tools_dir / "yt-dlp.conf"
+
+    # Prioritize user's actual yt-dlp.conf placed in project or bundled
+    source_conf = None
+    if getattr(sys, "frozen", False):
+        exe_conf = Path(sys.executable).parent / "yt-dlp.conf"
+        meipass = getattr(sys, "_MEIPASS", None)
+        bundle_conf = Path(meipass) / "yt-dlp.conf" if meipass else None
+        if exe_conf.exists():
+            source_conf = exe_conf
+        elif bundle_conf and bundle_conf.exists():
+            source_conf = bundle_conf
+    else:
+        root_conf = Path(__file__).resolve().parent.parent / "yt-dlp.conf"
+        if root_conf.exists():
+            source_conf = root_conf
+
+    if source_conf and source_conf.exists():
+        conf_content = source_conf.read_text(encoding="utf-8", errors="ignore")
+    else:
+        conf_content = DEFAULT_YTDLP_CONF_TEMPLATE.replace("{downloads_dir}", str(target_dl).replace("/", "\\"))
+
+    try:
+        conf_path.parent.mkdir(parents=True, exist_ok=True)
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(conf_content)
-        with open(tiktok_conf_path, "w", encoding="utf-8") as f:
-            f.write(tiktok_conf_content)
+
+        # Apply interactive download destinations (videos, subtitles, thumbnails)
+        from .engine import update_ytdlp_conf_destinations
+        update_ytdlp_conf_destinations(target_dl, conf_path=conf_path)
 
         if callback:
-            callback(f"[+] Generated yt-dlp.conf and tiktok-live.conf.txt in {tools_dir}!", 100.0)
+            callback(f"[+] Installed global yt-dlp.conf directly next to yt-dlp.exe in {tools_dir} (Output: {target_dl})!", 100.0)
         return True, str(conf_path)
     except Exception as e:
-        return False, f"Could not create configuration files: {e}"
+        return False, f"Could not create configuration file: {e}"
 
 
 def install_python_runtime(callback: Optional[Callable[[str, float], None]] = None) -> Tuple[bool, str]:
@@ -428,6 +494,7 @@ def add_folder_to_user_path(folder: Path) -> bool:
 
 def run_full_onboarding(
     tools_dir: Path,
+    downloads_dir: Optional[Path] = None,
     do_ytdlp: bool = True,
     do_ffmpeg: bool = True,
     do_conf: bool = True,
@@ -461,15 +528,20 @@ def run_full_onboarding(
     # 2. FFmpeg & FFprobe
     if do_ffmpeg:
         report("Setting up FFmpeg & FFprobe media engine...", 30.0)
-        ok, detail = install_ffmpeg_suite(tools_dir, lambda m, p: report(m, 30.0 + (p * 0.35)))
+        ok, detail = install_ffmpeg_suite(tools_dir, lambda m, p: report(m, 30.0 + (p * 0.30)))
         results["ffmpeg"] = {"ok": ok, "detail": detail}
     else:
         results["ffmpeg"] = {"ok": True, "detail": "Skipped by user"}
 
+    # 2b. aria2c download accelerator (used by yt-dlp.conf)
+    report("Checking aria2c multi-connection download accelerator...", 60.0)
+    ok_aria, detail_aria = install_aria2c_engine(tools_dir, lambda m, p: report(m, 60.0 + (p * 0.08)))
+    results["aria2c"] = {"ok": ok_aria, "detail": detail_aria}
+
     # 3. Optimized Configs next to yt-dlp.exe
     if do_conf:
         report("Installing optimized yt-dlp.conf preset directly next to yt-dlp.exe...", 68.0)
-        ok, detail = install_optimized_configs(tools_dir, lambda m, p: report(m, 68.0 + (p * 0.05)))
+        ok, detail = install_optimized_configs(tools_dir, downloads_dir=downloads_dir, callback=lambda m, p: report(m, 68.0 + (p * 0.05)))
         results["conf"] = {"ok": ok, "detail": detail}
     else:
         results["conf"] = {"ok": True, "detail": "Skipped by user"}
@@ -555,8 +627,9 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     desc_lbl.pack(anchor="w", pady=(4, 15))
 
     # Folder Picker Card
+    # Tools Folder Picker Card
     folder_card = tb.Labelframe(container, text=" 📂 Tools Installation Folder ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" 📂 Tools Installation Folder ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
-    folder_card.pack(fill="x", pady=(0, 12))
+    folder_card.pack(fill="x", pady=(0, 10))
 
     folder_var = tk.StringVar(value=str(get_default_tools_dir()))
     folder_entry = tb.Entry(folder_card, textvariable=folder_var, font=("Segoe UI", 9), bootstyle="info") if HAS_TB else tk.Entry(folder_card, textvariable=folder_var, font=("Segoe UI", 9))
@@ -570,9 +643,26 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     browse_btn = tb.Button(folder_card, text="Browse...", command=browse_folder, bootstyle="outline-secondary") if HAS_TB else tk.Button(folder_card, text="Browse...", command=browse_folder)
     browse_btn.pack(side="right")
 
+    # Download Destination Folder Picker Card (Default: ~/Downloads)
+    dl_card = tb.Labelframe(container, text=" 📥 Download Destination Folder (yt-dlp.conf) ", padding=14, bootstyle="primary") if HAS_TB else tk.LabelFrame(container, text=" 📥 Download Destination Folder (yt-dlp.conf) ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
+    dl_card.pack(fill="x", pady=(0, 10))
+
+    from .engine import get_conf_download_dir
+    dl_var = tk.StringVar(value=str(get_conf_download_dir()))
+    dl_entry = tb.Entry(dl_card, textvariable=dl_var, font=("Segoe UI", 9), bootstyle="primary") if HAS_TB else tk.Entry(dl_card, textvariable=dl_var, font=("Segoe UI", 9))
+    dl_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+    def browse_dl():
+        chosen = filedialog.askdirectory(initialdir=dl_var.get(), title="Select Download Destination Folder")
+        if chosen:
+            dl_var.set(chosen)
+
+    browse_dl_btn = tb.Button(dl_card, text="Browse / Drop...", command=browse_dl, bootstyle="outline-primary") if HAS_TB else tk.Button(dl_card, text="Browse...", command=browse_dl)
+    browse_dl_btn.pack(side="right")
+
     # Options Card
     opts_card = tb.Labelframe(container, text=" 📦 Components to Configure & Install ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" 📦 Components to Configure & Install ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
-    opts_card.pack(fill="x", pady=(0, 12))
+    opts_card.pack(fill="x", pady=(0, 10))
 
     chk_ytdlp_var = tk.BooleanVar(value=True)
     chk_ffmpeg_var = tk.BooleanVar(value=True)
@@ -588,17 +678,17 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
 
     tb.Checkbutton(opts_card, text=ytdlp_lbl_text, variable=chk_ytdlp_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text=ytdlp_lbl_text, variable=chk_ytdlp_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
     tb.Checkbutton(opts_card, text=ffmpeg_lbl_text, variable=chk_ffmpeg_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text=ffmpeg_lbl_text, variable=chk_ffmpeg_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
-    tb.Checkbutton(opts_card, text="Install StreamVortex optimized yt-dlp.conf & tiktok-live.conf presets", variable=chk_conf_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text="Install StreamVortex optimized yt-dlp.conf & tiktok-live.conf presets", variable=chk_conf_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
+    tb.Checkbutton(opts_card, text="Install StreamVortex optimized yt-dlp.conf preset directly next to yt-dlp.exe", variable=chk_conf_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text="Install StreamVortex optimized yt-dlp.conf preset directly next to yt-dlp.exe", variable=chk_conf_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
     tb.Checkbutton(opts_card, text=python_lbl_text, variable=chk_python_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text=python_lbl_text, variable=chk_python_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
     tb.Checkbutton(opts_card, text=vlc_lbl_text, variable=chk_vlc_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text=vlc_lbl_text, variable=chk_vlc_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
     tb.Checkbutton(opts_card, text="Add Tools folder to Windows User PATH (Enables global CMD usage)", variable=chk_path_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text="Add Tools folder to Windows User PATH (Enables global CMD usage)", variable=chk_path_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
 
     # Progress & Log
     progress_bar = tb.Progressbar(container, mode="determinate", bootstyle="success-striped") if HAS_TB else ttk.Progressbar(container, mode="determinate")
-    progress_bar.pack(fill="x", pady=(8, 8))
+    progress_bar.pack(fill="x", pady=(6, 6))
 
-    log_box = tk.Text(container, height=6, bg="#080c16", fg="#e2e8f0", font=("Consolas", 8), relief="flat", padx=8, pady=8)
-    log_box.pack(fill="both", expand=True, pady=(0, 12))
+    log_box = tk.Text(container, height=5, bg="#080c16", fg="#e2e8f0", font=("Consolas", 8), relief="flat", padx=8, pady=8)
+    log_box.pack(fill="both", expand=True, pady=(0, 10))
     log_box.insert("end", "[Ready] Click 'Start Automated Setup' below to begin.\n")
 
     # Action Buttons
@@ -608,7 +698,9 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     def _start():
         start_btn.config(state="disabled")
         browse_btn.config(state="disabled")
-        tools_path = Path(folder_var.get().strip())
+        browse_dl_btn.config(state="disabled")
+        tools_path = Path(folder_var.get().strip().strip("'\""))
+        dl_path = Path(dl_var.get().strip().strip("'\""))
 
         def _worker():
             def cb(msg: str, pct: float):
@@ -620,6 +712,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
 
             res = run_full_onboarding(
                 tools_dir=tools_path,
+                downloads_dir=dl_path,
                 do_ytdlp=chk_ytdlp_var.get(),
                 do_ffmpeg=chk_ffmpeg_var.get(),
                 do_conf=chk_conf_var.get(),
@@ -632,7 +725,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
             def _done():
                 start_btn.config(text="✓ Setup Complete", bootstyle="success", state="disabled")
                 close_btn.config(text="🚀 Launch Studio", bootstyle="info", command=_finish)
-                messagebox.showinfo("Setup Complete", "StreamVortex has successfully set up all components! You are ready to stream.")
+                messagebox.showinfo("Setup Complete", f"StreamVortex has configured everything!\n\nTools: {tools_path}\nDownloads: {dl_path}\nConfig: {tools_path / 'yt-dlp.conf'}")
             win.after(0, _done)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -659,6 +752,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
 def run_cli_onboarding():
     """
     Terminal-based interactive onboarding for console users.
+    Prompts user to select tools folder and drag & drop download folder.
     """
     from rich.console import Console
     from rich.panel import Panel
@@ -684,12 +778,32 @@ def run_cli_onboarding():
 
     tools_dir = Path(tools_dir_str)
 
+    # Interactive Download Destination with Drag & Drop prompt
+    from .engine import get_conf_download_dir
+    default_dl = str(get_conf_download_dir())
+    console.print(
+        f"\n[bold cyan]📥 Download Destination Folder[/bold cyan]\n"
+        f"[dim]Current default: [bold white]{default_dl}[/bold white][/dim]\n"
+        "[dim]💡 Tip: Drag and drop ANY folder from Windows Explorer into this window, or press Enter to keep default.[/dim]"
+    )
+    raw_dl = questionary.text(
+        "Enter or Drag & Drop download folder:",
+        default=default_dl
+    ).ask()
+    if raw_dl and raw_dl.strip():
+        cleaned_dl = raw_dl.strip().strip("'\"")
+        downloads_dir = Path(cleaned_dl).expanduser().resolve()
+    else:
+        downloads_dir = Path(default_dl)
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    console.print(f"[bold green][+] Destination folder confirmed:[/bold green] {downloads_dir}\n")
+
     opts = questionary.checkbox(
         "Select components to install / configure:",
         choices=[
             questionary.Choice("Download official yt-dlp.exe", checked=True),
             questionary.Choice("Download official FFmpeg & FFprobe", checked=True),
-            questionary.Choice("Install optimized yt-dlp.conf & tiktok-live.conf presets", checked=True),
+            questionary.Choice("Install optimized yt-dlp.conf preset directly next to yt-dlp.exe", checked=True),
             questionary.Choice("Verify / Install Python 3.11 Runtime", checked=True),
             questionary.Choice("Verify / Install VLC Media Player", checked=True),
             questionary.Choice("Add Tools folder to Windows User PATH", checked=True),
@@ -707,6 +821,7 @@ def run_cli_onboarding():
 
     run_full_onboarding(
         tools_dir=tools_dir,
+        downloads_dir=downloads_dir,
         do_ytdlp="yt-dlp.exe" in "".join(opts),
         do_ffmpeg="FFmpeg" in "".join(opts),
         do_conf="optimized" in "".join(opts),
@@ -716,7 +831,8 @@ def run_cli_onboarding():
         callback=cli_cb
     )
 
-    console.print("\n[bold green][+] Setup complete! Everything is ready.[/bold green]\n")
+    console.print(f"\n[bold green][+] Setup complete! Everything is ready.[/bold green]")
+    console.print(f"[dim]Downloads will be saved to: [bold white]{downloads_dir}[/bold white][/dim]\n")
 
 
 if __name__ == "__main__":

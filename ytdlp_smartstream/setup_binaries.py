@@ -163,10 +163,20 @@ def setup_all_binaries(
     # 3. Active yt-dlp config verification
     conf_file = find_ytdlp_conf()
     if conf_file and conf_file.exists():
-        report(f"Active yt-dlp config verified: {conf_file} (next to global yt-dlp)", 70.0)
+        report(f"Active yt-dlp config verified: {conf_file}", 68.0)
         results["config"] = {"status": "OK", "path": str(conf_file)}
     else:
         results["config"] = {"status": "INFO", "path": "Default settings"}
+
+    # 3b. aria2c download accelerator verification
+    from .engine import find_aria2c
+    aria_bin = find_aria2c()
+    if aria_bin:
+        report(f"aria2c download accelerator verified: {aria_bin}", 75.0)
+        results["aria2c"] = {"status": "OK", "path": str(aria_bin)}
+    else:
+        report("aria2c accelerator not found (using native multi-threaded downloader)", 75.0)
+        results["aria2c"] = {"status": "INFO", "detail": "Optional accelerator"}
 
     # 4. Playwright Chromium
     report("Checking Playwright Chromium driver...", 80.0)

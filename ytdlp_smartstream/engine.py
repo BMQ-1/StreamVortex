@@ -256,17 +256,48 @@ def is_environment_ready() -> bool:
     return bool(ytdlp and ffmpeg)
 
 
-def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = None) -> Optional[Path]:
+def find_aria2c() -> Optional[str]:
     """
-    Intelligently locates the user's yt-dlp configuration file (.conf).
-    Prioritizes:
+    Locates the aria2c multi-connection download accelerator executable.
+    Checks system PATH, C:\\Tools, adjacent to yt-dlp.exe, and project bin folder.
+    """
+    which_bin = shutil.which("aria2c")
+    if which_bin:
+        return which_bin
+
+    # Adjacent to detected yt-dlp
+    ytdlp_cmd = find_ytdlp()
+    if ytdlp_cmd and not ytdlp_cmd[0].endswith(".py") and "-m" not in ytdlp_cmd:
+        p = Path(ytdlp_cmd[0]).parent / "aria2c.exe"
+        if p.exists():
+            return str(p)
+
+    # Standard C:\Tools
+    for cand in [Path("C:/Tools/aria2c.exe"), Path("C:/Tools/aria2/aria2c.exe")]:
+        if cand.exists():
+            return str(cand)
+
+    # Local bin
+    if getattr(sys, "frozen", False):
+        local_bin = Path(sys.executable).parent / "bin" / "aria2c.exe"
+    else:
+        local_bin = Path(__file__).resolve().parent.parent / "bin" / "aria2c.exe"
+    if local_bin.exists():
+        return str(local_bin)
+
+    return None
+
+
+def find_ytdlp_conf(custom_conf: Optional[str] = None) -> Optional[Path]:
+    """
+    Locates the user's global yt-dlp configuration file (.conf).
+    Prioritizes yt-dlp's standard native configuration locations so that
+    yt-dlp behaves consistently globally whether called by StreamVortex or directly from terminal:
     1. Explicit custom path or configured in ~/.streamvortex/config.json
-    2. DIRECTLY NEXT TO THE GLOBAL yt-dlp.exe (e.g. C:\\Tools\\yt-dlp.conf)
-    3. C:\\Tools\\tiktok-live.conf.txt (if is_tiktok_live is True)
-    4. C:\\Tools\\yt-dlp.conf
-    5. %APPDATA%\\yt-dlp\\config or %APPDATA%\\yt-dlp.conf
-    6. %USERPROFILE%\\yt-dlp.conf or ~/.config/yt-dlp/config
-    7. Current working directory yt-dlp.conf
+    2. Directly adjacent to global yt-dlp.exe (yt-dlp's native portable config: <path_to_yt-dlp>/yt-dlp.conf)
+    3. C:\\Tools\\yt-dlp.conf
+    4. Standard user config directories (%APPDATA%\\yt-dlp\\config, %USERPROFILE%\\yt-dlp.conf)
+    5. Fallback: project root or current working directory yt-dlp.conf
     """
     if custom_conf and Path(custom_conf).exists():
         return Path(custom_conf)
@@ -280,32 +311,18 @@ def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = N
     except Exception:
         pass
 
-    # 2. Look DIRECTLY NEXT TO THE GLOBAL yt-dlp.exe!
+    # 2. Look DIRECTLY NEXT TO THE GLOBAL yt-dlp.exe! (yt-dlp's native portable configuration)
     ytdlp_cmd = find_ytdlp()
     if ytdlp_cmd and not ytdlp_cmd[0].endswith(".py") and "-m" not in ytdlp_cmd:
         ytdlp_exe_path = Path(ytdlp_cmd[0])
         if ytdlp_exe_path.exists():
             ytdlp_dir = ytdlp_exe_path.parent
-
-            # If TikTok live, check for live conf adjacent to global yt-dlp.exe
-            if is_tiktok_live:
-                for name in ["tiktok-live.conf.txt", "tiktok-live.conf", "tiktok_live.conf"]:
-                    adjacent_tiktok = ytdlp_dir / name
-                    if adjacent_tiktok.exists():
-                        return adjacent_tiktok
-
-            # Check for yt-dlp.conf directly adjacent to global yt-dlp.exe
             for name in ["yt-dlp.conf", "yt-dlp.conf.txt", "config.txt", "config"]:
                 adjacent_conf = ytdlp_dir / name
                 if adjacent_conf.exists():
                     return adjacent_conf
 
-    # 3. Fallback: Check C:\Tools\ (standard location)
-    if is_tiktok_live:
-        tiktok_conf = Path("C:/Tools/tiktok-live.conf.txt")
-        if tiktok_conf.exists():
-            return tiktok_conf
-
+    # 3. Standard C:\Tools\yt-dlp.conf
     c_tools_conf = Path("C:/Tools/yt-dlp.conf")
     if c_tools_conf.exists():
         return c_tools_conf
@@ -327,16 +344,15 @@ def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = N
         if cand.exists():
             return cand
 
-    # 6. Project root or bin/
+    # 6. Fallback: Project root or current directory
     try:
         project_root = Path(__file__).resolve().parent.parent
-        for p in [project_root / "yt-dlp.conf", project_root / "bin" / "yt-dlp.conf"]:
-            if p.exists():
-                return p
+        proj_conf = project_root / "yt-dlp.conf"
+        if proj_conf.exists():
+            return proj_conf
     except Exception:
         pass
 
-    # 7. Current directory
     cwd_conf = Path.cwd() / "yt-dlp.conf"
     if cwd_conf.exists():
         return cwd_conf
@@ -359,6 +375,217 @@ def conf_has_output_template(conf_path: Path) -> bool:
     except Exception:
         pass
     return False
+
+
+def get_conf_download_dir(conf_path: Optional[Path] = None) -> Path:
+    """
+    Extracts the active download directory specified in yt-dlp.conf.
+    If not specified or relative/placeholder, defaults cleanly to user's Downloads directory.
+    """
+    target_conf = conf_path or find_ytdlp_conf()
+    if target_conf and target_conf.exists():
+        try:
+            content = target_conf.read_text(encoding="utf-8", errors="ignore")
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith("-o ") and not line.startswith("-o subtitle:") and not line.startswith("-o thumbnail:"):
+                    val = line[3:].strip().strip('"').strip("'")
+                    if val.startswith("~"):
+                        val = str(Path.home()) + val[1:]
+                    idx = val.find("%")
+                    path_part = val[:idx] if idx != -1 else val
+                    sep_idx = max(path_part.rfind("/"), path_part.rfind("\\"))
+                    if sep_idx != -1:
+                        extracted = Path(path_part[:sep_idx]).expanduser().resolve()
+                        if extracted.exists() or extracted.parent.exists():
+                            return extracted
+        except Exception:
+            pass
+
+    return get_download_dir()
+
+
+def update_ytdlp_conf_destinations(new_download_dir: Path, conf_path: Optional[Path] = None) -> Tuple[bool, str]:
+    """
+    Interactively updates all download destinations in yt-dlp.conf:
+    - Videos: <dest_dir>\\%(playlist|)s\\%(title).70B_%(epoch)s.%(ext)s
+    - Subtitles: subtitle:<dest_dir>\\Subs\\%(title).70B_%(epoch)s.%(ext)s
+    - Thumbnails: thumbnail:<dest_dir>\\Thumbnails\\%(title).70B_%(epoch)s.%(ext)s
+
+    Preserves all format selections, aria2c flags, network resilience, and user options.
+    Also synchronizes StreamVortex config.json so CLI, GUI, and Web studio remain unified.
+    """
+    dest_dir = Path(new_download_dir).expanduser().resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    target_conf = conf_path or find_ytdlp_conf()
+    if not target_conf:
+        saved_tools = get_config().get("tools_dir")
+        if saved_tools:
+            target_conf = Path(saved_tools) / "yt-dlp.conf"
+        else:
+            target_conf = Path("C:/Tools/yt-dlp.conf")
+
+    target_conf.parent.mkdir(parents=True, exist_ok=True)
+
+    dest_str = str(dest_dir).replace("/", "\\")
+    new_video_line = f'-o "{dest_str}\\%(playlist|)s\\%(title).70B_%(epoch)s.%(ext)s"'
+    new_sub_line = f'-o "subtitle:{dest_str}\\Subs\\%(title).70B_%(epoch)s.%(ext)s"'
+    new_thumb_line = f'-o "thumbnail:{dest_str}\\Thumbnails\\%(title).70B_%(epoch)s.%(ext)s"'
+
+    existing_lines = []
+    if target_conf.exists():
+        try:
+            existing_lines = target_conf.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            existing_lines = []
+
+    # Filter out existing -o lines
+    filtered_lines = []
+    for line in existing_lines:
+        s = line.strip()
+        if s.startswith("-o ") or s.startswith("--output "):
+            continue
+        filtered_lines.append(line)
+
+    # Clean leading blank lines or existing output section headers
+    while filtered_lines and (filtered_lines[0].strip() == "" or "OUTPUT" in filtered_lines[0]):
+        filtered_lines.pop(0)
+
+    output_block = [
+        "# ===== OUTPUT =====",
+        new_video_line,
+        new_sub_line,
+        new_thumb_line,
+        ""
+    ]
+
+    final_content = "\n".join(output_block + filtered_lines).strip() + "\n"
+
+    try:
+        with open(target_conf, "w", encoding="utf-8") as f:
+            f.write(final_content)
+
+        try:
+            root_conf = Path(__file__).resolve().parent.parent / "yt-dlp.conf"
+            if root_conf.exists() and root_conf.resolve() != target_conf.resolve():
+                with open(root_conf, "w", encoding="utf-8") as f:
+                    f.write(final_content)
+        except Exception:
+            pass
+
+        cfg = get_config()
+        cfg["download_dir"] = str(dest_dir)
+        cfg["ytdlp_conf_path"] = str(target_conf)
+        save_config(cfg)
+
+        return True, f"Updated yt-dlp.conf output destinations to: {dest_dir}"
+    except Exception as e:
+        return False, str(e)
+
+
+def get_conf_format(conf_path: Optional[Path] = None) -> Optional[str]:
+    """
+    Extracts the active, uncommented format rule (-f or --format) specified in yt-dlp.conf.
+    Returns None if no active format rule is present.
+    """
+    target_conf = conf_path or find_ytdlp_conf()
+    if not target_conf or not target_conf.exists():
+        return None
+    try:
+        content = target_conf.read_text(encoding="utf-8", errors="ignore")
+        for line in content.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith(";"):
+                continue
+            if s.startswith("-f ") or s.startswith("-f\t"):
+                return s[2:].strip().strip('"').strip("'")
+            if s.startswith("--format ") or s.startswith("--format\t"):
+                return s[8:].strip().strip('"').strip("'")
+            if s.startswith("--format="):
+                return s[9:].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return None
+
+
+def build_format_args(
+    quality_preference: Optional[str] = "best",
+    is_live: bool = False,
+    audio_only: bool = False,
+    conf_path: Optional[Path] = None
+) -> Tuple[List[str], str]:
+    """
+    Determines the exact yt-dlp CLI arguments (-f, -S, --merge-output-format) needed to fulfill user intent.
+
+    Precedence & Edge Case Resolution Hierarchy:
+    1. Audio Extraction ('audio_mp3', 'audio_m4a', or audio_only=True):
+       Forces '-f bestaudio/best' and '--no-keep-video'. This guarantees yt-dlp only downloads
+       the lightweight audio stream, bypassing any heavy video format or video merge rules in yt-dlp.conf.
+    2. Respect yt-dlp.conf ('conf', 'config', 'custom'):
+       Passes NO format flags, allowing the user's custom yt-dlp.conf format rules to take full priority.
+    3. Live Stream (is_live=True):
+       Live feeds usually have unified streams. We pass live-compatible stream selectors ('best/bestvideo+bestaudio/b'),
+       overriding split video+audio format rules in yt-dlp.conf that would otherwise fail on live manifests.
+    4. Best / Maximum Quality ('best', 'bestquality', 'max', '4k_2k', '4k'):
+       Passes '-f (bestvideo+bestaudio/best)' and '-S res,fps,hdr:12,codec:av01:vp9:h264'.
+       yt-dlp parses CLI arguments after --config-locations, so this explicitly overrides any
+       720p or 1080p cap defined in yt-dlp.conf, ensuring the user gets full 4K/2K resolution.
+    5. Specific Resolution Caps ('1080p', '720p', '480p'):
+       Explicitly enforces the chosen cap with matching format and sort flags, overriding any opposing rule in .conf.
+    """
+    conf_format = get_conf_format(conf_path)
+    conf_label = f" (overriding '{conf_format}' in yt-dlp.conf)" if conf_format else ""
+
+    q_clean = (quality_preference or "").lower().strip()
+
+    # 1. Audio-only extraction edge case
+    if audio_only or q_clean in ("audio_mp3", "audio_m4a", "audio"):
+        fmt_label = "M4A" if q_clean == "audio_m4a" else "MP3"
+        return [
+            "-f", "bestaudio/best",
+            "--no-keep-video"
+        ], f"Audio-only profile ({fmt_label}): downloading pure audio stream{conf_label}"
+
+    # 2. Explicit request to defer to yt-dlp.conf
+    if q_clean in ("conf", "config", "custom", "native"):
+        active_fmt = conf_format or "default yt-dlp fallback"
+        return [], f"Respecting format rule directly from yt-dlp.conf: {active_fmt}"
+
+    # 3. Live streams edge case
+    if is_live:
+        if "720" in q_clean:
+            return ["-f", "best[height<=720]/bestvideo[height<=720]+bestaudio/best"], f"Live stream capped at 720p{conf_label}"
+        elif "480" in q_clean:
+            return ["-f", "best[height<=480]/bestvideo[height<=480]+bestaudio/best"], f"Live stream capped at 480p{conf_label}"
+        else:
+            return ["-f", "best/bestvideo+bestaudio/b"], f"Live stream source quality (unified manifest){conf_label}"
+
+    # 4. Explicit resolution profiles
+    if "1080" in q_clean:
+        return [
+            "-f", "(bestvideo[height<=1080]+bestaudio/best[height<=1080]/best)",
+            "-S", "res:1080,fps,hdr:12",
+            "--merge-output-format", "mp4"
+        ], f"Enforcing 1080p Universal MP4 profile{conf_label}"
+
+    if "720" in q_clean:
+        return [
+            "-f", "(bestvideo[height<=720]+bestaudio/best[height<=720]/best)",
+            "-S", "res:720,fps"
+        ], f"Enforcing 720p Fast profile{conf_label}"
+
+    if "480" in q_clean:
+        return [
+            "-f", "(bestvideo[height<=480]+bestaudio/best[height<=480]/best)",
+            "-S", "res:480"
+        ], f"Enforcing 480p Data Saver profile{conf_label}"
+
+    # 5. Best / Maximum quality (default when quality_preference is "best", "max", "bestquality", etc.)
+    return [
+        "-f", "(bestvideo+bestaudio/best)",
+        "-S", "res,fps,hdr:12,codec:av01:vp9:h264"
+    ], f"Enforcing Maximum/Best quality profile (unconstrained 4K/2K/1080p){conf_label}"
 
 
 def sanitize_filename(name: str, max_length: int = 150) -> str:
@@ -741,12 +968,12 @@ def run_ytdlp_download(
     cmd = list(ytdlp_cmd)
 
     # 1. Config Discovery & Injection
-    is_tiktok_live = "tiktok.com" in stream_url and "/live" in stream_url
-    conf = Path(conf_path) if conf_path else find_ytdlp_conf(is_tiktok_live=is_tiktok_live)
+    # 1. Config Discovery & Injection
+    conf = Path(conf_path) if conf_path else find_ytdlp_conf()
 
     if conf and conf.exists():
         cmd.extend(["--config-locations", str(conf)])
-        msg = f"[StreamVortex] Using yt-dlp configuration: {conf}"
+        msg = f"[StreamVortex] Using global yt-dlp configuration: {conf}"
         if on_output:
             on_output(msg)
         else:
@@ -756,31 +983,33 @@ def run_ytdlp_download(
 
     # 2. Output Filename & Template Handling
     has_conf_output = conf_has_output_template(conf) if conf else False
+    target_dir = get_conf_download_dir(conf)
     out_path_label = ""
 
-    ext_target = "m4a" if quality_preference == "audio_m4a" else ("mp3" if audio_only else "mp4")
+    is_audio = audio_only or (quality_preference and quality_preference in ("audio_mp3", "audio_m4a"))
+    ext_target = "m4a" if quality_preference == "audio_m4a" else ("mp3" if is_audio else "mp4")
 
     if output_filename:
         out_path = Path(output_filename)
         if not out_path.is_absolute():
-            out_path = d_dir / out_path
+            out_path = target_dir / out_path
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
+    elif has_conf_output and respect_conf_output and not is_audio:
+        out_path_label = f"Configured in {conf.name} ({target_dir})"
     elif title:
         safe_name = sanitize_title_for_filename(title, uploader=uploader, ext=ext_target)
-        out_path = d_dir / safe_name
+        out_path = target_dir / safe_name
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
-    elif has_conf_output and respect_conf_output:
-        out_path_label = "Configured in yt-dlp.conf"
     else:
-        out_ext = ext_target if (audio_only or quality_preference == "audio_m4a") else "%(ext)s"
-        out_path = d_dir / f"%(title).90B [%(id)s].{out_ext}"
+        out_ext = ext_target if is_audio else "%(ext)s"
+        out_path = target_dir / f"%(title).90B [%(id)s].{out_ext}"
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
 
     # 3. Handle Audio Extraction
-    if audio_only or quality_preference in ("audio_mp3", "audio_m4a"):
+    if is_audio:
         fmt = "m4a" if quality_preference == "audio_m4a" else "mp3"
         cmd.extend([
             "-x",
@@ -788,22 +1017,29 @@ def run_ytdlp_download(
             "--audio-quality", "0",
         ])
 
-    # 4. Handle Live Streams & Quality Profiles
+    # 4. Handle Format Selection & Quality Profiles (resolves precedence with yt-dlp.conf)
+    fmt_args, fmt_reason = build_format_args(
+        quality_preference=quality_preference,
+        is_live=is_live,
+        audio_only=audio_only,
+        conf_path=conf
+    )
+    if fmt_args:
+        cmd.extend(fmt_args)
+
+    if fmt_reason:
+        msg = f"[StreamVortex Quality] {fmt_reason}"
+        if on_output:
+            on_output(msg)
+        else:
+            print(msg)
+
+    # 5. Live Streams Engine Overrides
     if is_live:
         cmd.extend([
             "--downloader", "m3u8:native",
             "--no-part",
-            "-f", "best/b",
         ])
-    elif quality_preference and quality_preference not in ("best", "audio_mp3", "audio_m4a"):
-        if quality_preference in ("max", "4k_2k"):
-            cmd.extend(["-f", "(bestvideo[height>=1440]+bestaudio/bestvideo+bestaudio/best)"])
-        elif "1080" in quality_preference:
-            cmd.extend(["-f", "(bestvideo[height<=1080]+bestaudio/best[height<=1080]/best)"])
-        elif "720" in quality_preference:
-            cmd.extend(["-f", "(bestvideo[height<=720]+bestaudio/best[height<=720]/best)"])
-        elif "480" in quality_preference:
-            cmd.extend(["-f", "(bestvideo[height<=480]+bestaudio/best[height<=480]/best)"])
 
     # 5. Headers & Flags
     if referer:
@@ -818,6 +1054,13 @@ def run_ytdlp_download(
         "--progress"
     ])
 
+    # Configure execution environment with aria2c in PATH if present
+    env = os.environ.copy()
+    aria_bin = find_aria2c()
+    if aria_bin:
+        aria_dir = str(Path(aria_bin).parent)
+        env["PATH"] = aria_dir + os.pathsep + env.get("PATH", "")
+
     # 6. Run process with live output streaming & progress parsing
     if on_output or progress_callback:
         proc = subprocess.Popen(
@@ -826,7 +1069,8 @@ def run_ytdlp_download(
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            env=env
         )
         for line in proc.stdout:
             clean_line = line.strip()
@@ -853,7 +1097,7 @@ def run_ytdlp_download(
         proc.wait()
         retcode = proc.returncode
     else:
-        retcode = subprocess.run(cmd).returncode
+        retcode = subprocess.run(cmd, env=env).returncode
 
     if retcode == 0:
         entry_title = title or (Path(out_path_label).stem if out_path_label != "Configured in yt-dlp.conf" else "Downloaded Media")

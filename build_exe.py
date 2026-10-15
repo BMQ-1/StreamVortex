@@ -33,8 +33,13 @@ def build():
         "--collect-all", "ttkbootstrap",
         "--collect-all", "yt_dlp_plugins",
         "--collect-all", "ytdlp_smartstream",
-        str(main_file)
     ]
+
+    conf_file = root / "yt-dlp.conf"
+    if conf_file.exists():
+        cmd.extend(["--add-data", f"{conf_file};."])
+
+    cmd.append(str(main_file))
 
     print("[Build] Executing PyInstaller compilation...")
     res = subprocess.run(cmd, cwd=str(root))

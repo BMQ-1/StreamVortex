@@ -79,4 +79,4 @@ __all__ = [
     "launch_web_ui",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.0"

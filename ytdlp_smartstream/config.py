@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 CONFIG_DIR = Path.home() / ".streamvortex"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
-DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "StreamVortex"
+DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads"
 
 
 def get_config() -> Dict[str, Any]:
@@ -117,3 +117,14 @@ def remove_from_watchlist(creator: str) -> bool:
         save_config(cfg)
         return True
     return False
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import subprocess
+    d = get_download_dir()
+    if sys.platform == "win32":
+        os.startfile(d)
+    else:
+        subprocess.run(["xdg-open", str(d)])

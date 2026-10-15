@@ -5,7 +5,7 @@
     <img src="https://img.shields.io/github/actions/workflow/status/BMQ-1/StreamVortex/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI Status" />
   </a>
   <a href="https://github.com/BMQ-1/StreamVortex/releases">
-    <img src="https://img.shields.io/badge/Release-v1.0.0-00f2fe?style=for-the-badge&logo=github" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v1.0-00f2fe?style=for-the-badge&logo=github" alt="Release" />
   </a>
   <a href="https://github.com/yt-dlp/yt-dlp">
     <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube" alt="yt-dlp" />
@@ -33,6 +33,15 @@
 ```
 
 **StreamVortex** bridges the gap when media downloaders fail on live broadcasts, VODs, or protected HLS/DASH streams due to Akamai WAF challenges, dynamic Webcast parameters, obfuscated player tokens, or strict anti-bot firewalls.
+
+---
+
+> [!NOTE]
+> **Crafted by Human Vision, Powered by AI**  
+> Everyview was envisioned, architected, and steered by the repository creator, with the implementation built collaboratively alongside AI under direct human guidance.
+
+---
+
 
 It operates seamlessly in **4 distinct modes**:
 1. 🖥️ **Modern Desktop GUI Studio** — Sleek dark-mode interface with clipboard auto-sniffing, batch downloading, and visual live logs.

@@ -42,14 +42,16 @@ def run_wizard():
             run_cli_onboarding()
 
     while True:
-        from .engine import find_ytdlp_conf
+        from .engine import find_ytdlp_conf, get_conf_download_dir
         active_conf = find_ytdlp_conf()
+        conf_dl = get_conf_download_dir()
         conf_str = f"\n[dim]Config: [bold yellow]{active_conf.name}[/bold yellow] ({active_conf.parent})[/dim]" if active_conf else ""
+        dl_str = f"\n[dim]Downloads Destination: [bold green]{conf_dl}[/bold green][/dim]"
         console.clear()
         console.print(
             Panel.fit(
                 f"[bold cyan]⚡ StreamVortex Control Center[/bold cyan] [bold white](Powered by yt-dlp)[/bold white]\n"
-                f"[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio for yt-dlp[/dim]{conf_str}",
+                f"[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio for yt-dlp[/dim]{conf_str}{dl_str}",
                 border_style="bright_blue"
             )
         )
@@ -60,6 +62,7 @@ def run_wizard():
                 "⚡ Quick Stream Sniffer & Downloader (Paste any URL)",
                 "🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)",
                 "📑 Batch URL Sequential Downloader (Multiple links)",
+                "📥 Change Download Destination (Drag & Drop Any Folder)",
                 "🌐 Open Web Studio (Recommended for beginners)",
                 "🎵 Extract Audio Only MP3 (via yt-dlp)",
                 "📁 Open Downloads Folder",
@@ -91,8 +94,14 @@ def run_wizard():
             questionary.press_any_key_to_continue().ask()
             continue
 
+        if "Change Download Destination" in choice:
+            _handle_change_download_dir()
+            questionary.press_any_key_to_continue().ask()
+            continue
+
         if "Open Downloads Folder" in choice:
-            d_dir = get_download_dir()
+            from .engine import get_conf_download_dir
+            d_dir = get_conf_download_dir()
             console.print(f"\n[cyan]Opening {d_dir}...[/cyan]")
             if sys.platform == "win32":
                 os.startfile(d_dir)
@@ -126,6 +135,41 @@ def run_wizard():
             _handle_audio_extract()
             questionary.press_any_key_to_continue().ask()
             continue
+
+
+def _handle_change_download_dir():
+    """Interactive drag and drop download destination folder selector."""
+    from .engine import get_conf_download_dir, update_ytdlp_conf_destinations, find_ytdlp_conf
+    current = get_conf_download_dir()
+    conf = find_ytdlp_conf()
+    conf_name = conf.name if conf else "yt-dlp.conf"
+
+    console.print("\n[bold cyan]📥 Interactive Download Destination Setup[/bold cyan]")
+    console.print(f"[dim]Current destination from {conf_name}: [bold white]{current}[/bold white][/dim]\n")
+    console.print("[dim]💡 Tip: Simply [bold white]drag & drop ANY folder[/bold white] from Windows Explorer into this window![/dim]")
+    console.print("[dim]   (Or type a directory path, or press Enter to keep current)[/dim]\n")
+
+    raw = questionary.text(
+        "Enter or Drag & Drop folder path:",
+        default=str(current)
+    ).ask()
+
+    if not raw or not raw.strip():
+        return
+
+    cleaned = raw.strip().strip("'\"")
+    new_dir = Path(cleaned).expanduser().resolve()
+    new_dir.mkdir(parents=True, exist_ok=True)
+
+    ok, msg = update_ytdlp_conf_destinations(new_dir)
+    if ok:
+        console.print(f"\n[bold green][+] SUCCESS:[/bold green] Download folder set to: [bold white]{new_dir}[/bold white]")
+        console.print(f"[green][+] Updated all destinations in {conf_name}:[/green]")
+        console.print(f"    [dim]• Video: {new_dir}\\%(playlist|)s\\%(title).70B_%(epoch)s.%(ext)s[/dim]")
+        console.print(f"    [dim]• Subtitles: {new_dir}\\Subs\\%(title).70B_%(epoch)s.%(ext)s[/dim]")
+        console.print(f"    [dim]• Thumbnails: {new_dir}\\Thumbnails\\%(title).70B_%(epoch)s.%(ext)s[/dim]\n")
+    else:
+        console.print(f"[red][-] Failed to update config: {msg}[/red]")
 
 
 def _handle_quick_sniff():
@@ -294,9 +338,16 @@ def _handle_batch_download():
         "Maximum Quality (4K/2K/1080p)",
         "Standard MP4 (1080p)",
         "Fast MP4 (720p)",
+        "Respect yt-dlp.conf Setting",
         "Studio Audio MP3"
     ]).ask()
-    q_map = {"Maximum Quality (4K/2K/1080p)": "max", "Standard MP4 (1080p)": "1080p", "Fast MP4 (720p)": "720p", "Studio Audio MP3": "audio_mp3"}
+    q_map = {
+        "Maximum Quality (4K/2K/1080p)": "max",
+        "Standard MP4 (1080p)": "1080p",
+        "Fast MP4 (720p)": "720p",
+        "Respect yt-dlp.conf Setting": "conf",
+        "Studio Audio MP3": "audio_mp3"
+    }
     q_code = q_map.get(q, "max")
 
     from .engine import resolve_stream_metadata, run_ytdlp_download

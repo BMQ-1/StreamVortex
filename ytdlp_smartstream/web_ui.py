@@ -112,8 +112,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 mono">
             Config: __ACTIVE_CONF__
           </span>
+          <span class="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mono hidden sm:inline-block" title="Active download destination from yt-dlp.conf">
+            📥 __DOWNLOAD_DIR__
+          </span>
         </div>
-        <p class="text-xs text-slate-400 mono">v1.0.0 // Intelligent Stream &amp; Live Studio</p>
+        <p class="text-xs text-slate-400 mono">v1.0 // Intelligent Stream &amp; Live Studio</p>
       </div>
     </div>
 
@@ -192,6 +195,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <option value="max">🎬 Max (4K/2K/1080p)</option>
             <option value="1080p">📱 1080p MP4</option>
             <option value="720p">⚡ 720p Fast</option>
+            <option value="conf">⚙️ Respect yt-dlp.conf</option>
             <option value="audio_mp3">🎵 MP3 (320k)</option>
             <option value="audio_m4a">🎧 M4A (AAC)</option>
           </select>
@@ -709,9 +713,11 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
 
         if parsed.path in ["/", "/index.html"]:
+            from .engine import get_conf_download_dir
             conf = find_ytdlp_conf()
             conf_name = conf.name if conf else "Default"
-            html = HTML_TEMPLATE.replace("__ACTIVE_CONF__", conf_name)
+            conf_dl = get_conf_download_dir()
+            html = HTML_TEMPLATE.replace("__ACTIVE_CONF__", conf_name).replace("__DOWNLOAD_DIR__", str(conf_dl))
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -787,7 +793,8 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/open_folder":
-            d_dir = get_download_dir()
+            from .engine import get_conf_download_dir
+            d_dir = get_conf_download_dir()
             if sys.platform == "win32":
                 os.startfile(d_dir)
             else:

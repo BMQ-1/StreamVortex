@@ -105,10 +105,18 @@ def run_doctor() -> bool:
     if conf_file and conf_file.exists():
         ytdlp_exe_path = Path(ytdlp_cmd[0]) if ytdlp_cmd and not ytdlp_cmd[0].endswith(".py") else None
         is_adjacent = ytdlp_exe_path and conf_file.parent.resolve() == ytdlp_exe_path.parent.resolve()
-        adj_tag = " (adjacent to yt-dlp.exe)" if is_adjacent else ""
+        adj_tag = " (adjacent to yt-dlp.exe)" if is_adjacent else " (project/global)"
         checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold green]PASS[/bold green]", "detail": f"Active: {conf_file}{adj_tag}"})
     else:
         checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold yellow]INFO[/bold yellow]", "detail": "Using standard defaults"})
+
+    # 6b. aria2c Download Accelerator Check
+    from .engine import find_aria2c
+    aria_bin = find_aria2c()
+    if aria_bin:
+        checks.append({"name": "aria2c Accelerator", "status": "[bold green]PASS[/bold green]", "detail": f"Detected: {aria_bin} (16 TCP connections active)"})
+    else:
+        checks.append({"name": "aria2c Accelerator", "status": "[bold yellow]INFO[/bold yellow]", "detail": "Optional accelerator (yt-dlp uses native multi-connection engine)"})
 
     # 7. Media Player Check
     mpv_path = shutil.which("mpv")

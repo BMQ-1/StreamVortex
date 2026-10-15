@@ -50,7 +50,7 @@ def print_banner(conf_path: Optional[str] = None):
     conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle=f"[bold white]v1.0.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
+        subtitle=f"[bold white]v1.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -111,9 +111,20 @@ def main():
     parser.add_argument("--timeout", "-t", type=int, default=15, help="Timeout in seconds for stream discovery")
     parser.add_argument("--output", "-o", default=None, help="Output filename for recordings")
     parser.add_argument("--batch", "-b", default=None, help="Path to text file containing URLs to download sequentially")
-    parser.add_argument("--quality", "-q", default="max", choices=["max", "1080p", "720p", "480p", "audio_mp3", "audio_m4a"], help="Quality profile (default: max)")
+    parser.add_argument("--quality", "-q", default="max", choices=["max", "best", "bestquality", "1080p", "720p", "480p", "conf", "audio_mp3", "audio_m4a"], help="Quality profile (default: max | options: max, 1080p, 720p, 480p, conf, audio_mp3, audio_m4a)")
+    parser.add_argument("--open-folder", action="store_true", help="Open the downloads directory in file explorer")
 
     args = parser.parse_args()
+
+    # Open downloads directory
+    if getattr(args, "open_folder", False):
+        from .config import get_download_dir
+        d = get_download_dir()
+        if sys.platform == "win32":
+            os.startfile(d)
+        else:
+            subprocess.run(["xdg-open", str(d)])
+        return
 
     # Batch file downloader
     if args.batch:

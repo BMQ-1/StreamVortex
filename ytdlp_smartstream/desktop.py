@@ -86,10 +86,10 @@ class StreamVortexApp:
 
         ver_lbl = tb.Label(
             header_frame,
-            text="v1.0.0 // Universal Stream Studio",
+            text="v1.0 // Universal Stream Studio",
             font=("Segoe UI", 9),
             bootstyle="secondary"
-        ) if HAS_TTKBOOTSTRAP else tk.Label(header_frame, text="v1.0.0 // Universal Stream Studio", font=("Segoe UI", 9), fg="#94a3b8", bg="#111827")
+        ) if HAS_TTKBOOTSTRAP else tk.Label(header_frame, text="v1.0 // Universal Stream Studio", font=("Segoe UI", 9), fg="#94a3b8", bg="#111827")
         ver_lbl.pack(side="left", padx=5)
 
         # Quick Navigation Links on Right of Header
@@ -166,6 +166,30 @@ class StreamVortexApp:
         ) if HAS_TTKBOOTSTRAP else tk.Button(status_grid, text="⚡ Setup Wizard", command=self._open_setup_wizard)
         self.setup_btn.pack(side="right")
 
+        # 2b. Interactive Download Destination & Drag-and-Drop Card
+        from .engine import get_conf_download_dir
+        dest_card = tb.Labelframe(main_frame, text=" 📥 Active Download Destination (yt-dlp.conf) ", padding=10, bootstyle="info") if HAS_TTKBOOTSTRAP else tk.LabelFrame(main_frame, text=" Download Destination ", padx=10, pady=10, bg="#1e293b", fg="white")
+        dest_card.pack(fill="x", pady=(0, 12))
+
+        dest_row = tb.Frame(dest_card) if HAS_TTKBOOTSTRAP else tk.Frame(dest_card, bg="#1e293b")
+        dest_row.pack(fill="x")
+
+        tb.Label(dest_row, text="Saving to:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+        self.download_dir_var = tb.StringVar(value=str(get_conf_download_dir())) if HAS_TTKBOOTSTRAP else tk.StringVar(value=str(get_conf_download_dir()))
+        self.dest_entry = tb.Entry(dest_row, textvariable=self.download_dir_var, font=("Segoe UI", 9)) if HAS_TTKBOOTSTRAP else tk.Entry(dest_row, textvariable=self.download_dir_var, font=("Segoe UI", 9))
+        self.dest_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.dest_entry.bind("<Return>", lambda e: self._on_download_dir_apply())
+        self.dest_entry.bind("<FocusOut>", lambda e: self._on_download_dir_apply())
+
+        set_dest_btn = tb.Button(
+            dest_row,
+            text="📂 Browse / Drop Folder",
+            bootstyle="outline-info",
+            command=self._browse_and_set_download_dir
+        ) if HAS_TTKBOOTSTRAP else tk.Button(dest_row, text="📂 Browse / Drop", command=self._browse_and_set_download_dir)
+        set_dest_btn.pack(side="right")
+
         # 3. Stream Actions & Downloader Panel
         action_card = tb.Labelframe(main_frame, text=" Stream Discovery & Intelligent Downloader ", padding=14, bootstyle="primary") if HAS_TTKBOOTSTRAP else tk.LabelFrame(main_frame, text=" Stream Discovery & Downloader ", padx=14, pady=14, bg="#1e293b", fg="white")
         action_card.pack(fill="x", pady=(0, 12))
@@ -219,6 +243,7 @@ class StreamVortexApp:
             "🎬 Maximum Quality (4K / 2K / 1080p)",
             "📱 Universal MP4 (1080p)",
             "⚡ Fast / Low Bandwidth (720p)",
+            "⚙️ Respect yt-dlp.conf Setting",
             "🎵 Studio MP3 Audio (320kbps)",
             "🎧 High-Fidelity Audio (M4A)"
         ]
@@ -286,7 +311,7 @@ class StreamVortexApp:
         self.log_text = tb.ScrolledText(log_card, height=12, font=("Consolas", 9), autohide=True) if HAS_TTKBOOTSTRAP else tk.Text(log_card, height=12, font=("Consolas", 9), bg="#0a0f1d", fg="#e2e8f0")
         self.log_text.pack(fill="both", expand=True)
 
-        self._log("[StreamVortex v1.0.0] Universal Stream Studio Initialized.")
+        self._log("[StreamVortex v1.0] Universal Stream Studio Initialized.")
         self._log(f"[Storage] Primary download directory: {get_download_dir()}")
 
     def _log(self, text: str):
@@ -324,11 +349,31 @@ class StreamVortexApp:
         self.root.after(1000, _check)
 
     def _open_downloads_folder(self):
-        d_dir = get_download_dir()
+        from .engine import get_conf_download_dir
+        d_dir = get_conf_download_dir()
         if sys.platform == "win32":
             os.startfile(d_dir)
         else:
             subprocess.run(["xdg-open", str(d_dir)])
+
+    def _browse_and_set_download_dir(self):
+        from tkinter import filedialog
+        current = self.download_dir_var.get().strip().strip("'\"")
+        chosen = filedialog.askdirectory(initialdir=current, title="Select Download Destination Folder")
+        if chosen:
+            self.download_dir_var.set(chosen)
+            self._on_download_dir_apply()
+
+    def _on_download_dir_apply(self):
+        from .engine import update_ytdlp_conf_destinations
+        val = self.download_dir_var.get().strip().strip("'\"")
+        if val:
+            p = Path(val).expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            ok, msg = update_ytdlp_conf_destinations(p)
+            self._log(f"[+] Download destination updated: {p}")
+            self._log("[+] Synced destinations in yt-dlp.conf (Videos, Subs, Thumbnails)")
+            self._check_engine_status_async()
 
     def _open_tools_folder(self):
         tdir = get_default_tools_dir()
@@ -375,6 +420,8 @@ class StreamVortexApp:
 
             # Check yt-dlp config
             conf = find_ytdlp_conf()
+            conf_text = "Config: Global (.conf)" if conf else "Config: Standard"
+
             # Check disk space
             has_space, free_gb = check_free_disk_space()
             disk_text = f"Disk: {free_gb:.1f} GB Free"
@@ -446,7 +493,9 @@ class StreamVortexApp:
 
     def _get_quality_code(self) -> str:
         val = self.quality_var.get()
-        if "4K" in val or "Maximum" in val:
+        if "Respect" in val or "yt-dlp.conf" in val or "conf" in val.lower():
+            return "conf"
+        elif "4K" in val or "Maximum" in val:
             return "max"
         elif "1080p" in val:
             return "1080p"

@@ -41,7 +41,7 @@ if %errorlevel% neq 0 (
 :MENU
 cls
 echo ========================================================================
-echo   StreamVortex v1.0.0 -- Universal Stream Studio (Powered by yt-dlp)
+echo   StreamVortex v1.0 -- Universal Stream Studio (Powered by yt-dlp)
 echo ========================================================================
 echo   * Resilient Live and VOD Extractor Engine for yt-dlp
 echo   * Universal HLS / DASH / M3U8 Stream Sniffer (Playwright CDP)
@@ -151,7 +151,11 @@ goto MENU
 
 :OPEN_FOLDER
 cls
-python -m ytdlp_smartstream.config
+if exist "StreamVortex.exe" (
+    "StreamVortex.exe" --open-folder
+) else (
+    python -m ytdlp_smartstream.config
+)
 goto MENU
 
 :EXIT

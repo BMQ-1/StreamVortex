@@ -1,23 +1,21 @@
 # ==============================================================================
 # StreamVortex .gitignore
-# Covers Python, PyInstaller binaries, Playwright, media, logs, and OS files
+# Complete coverage for Python, packaging, virtualenvs, media, logs, & OS files
 # ==============================================================================
 
-# Python Byte-compiled / optimized / DLL files
+# Python Byte-compiled / optimized / C-extensions
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyd
+*.dll
 
-# Distribution / packaging / PyInstaller artifacts
+# Distribution / Packaging / PyInstaller Build Artifacts
 build/
 dist/
 bin/
 *.exe
-*.dll
-*.dylib
-*.bin
-*.spec
 *.manifest
 *.egg-info/
 .eggs/
@@ -25,7 +23,7 @@ bin/
 *.whl
 *.tar.gz
 
-# Virtual environments
+# Virtual Environments
 venv/
 env/
 .venv/
@@ -33,16 +31,21 @@ ENV/
 env.bak/
 venv.bak/
 
-# Playwright & browser caching
+# Playwright & Headless Browser Cache
 .playwright/
 test-results/
 playwright-report/
 .cache/
 
-# User downloaded media (prevent accidental commit of test streams & downloads)
+# User Downloaded Media & Output Files (Lossless streams, video, audio)
+downloads/
+recordings/
 *.mp4
 *.mkv
 *.flv
+*.avi
+*.mov
+*.wmv
 *.m3u8
 *.ts
 *.part
@@ -55,18 +58,27 @@ playwright-report/
 *.webm
 *.ogg
 *.opus
+*.flac
 *.jpg
 *.jpeg
 *.png
 *.webp
 *.gif
+*.ico
 
-# StreamVortex user runtime config, history & logs
+# StreamVortex Local Runtime Config, History & Logs
 .streamvortex/
 *.log
 logs/
 
-# IDE / Editor directories & files
+# Sensitive Secrets & Environment Variables
+.env
+.env.*
+*.pem
+*.key
+*.cert
+
+# IDE / Editor Configurations
 .vscode/
 .idea/
 *.swp
@@ -76,7 +88,7 @@ logs/
 .pydevproject
 .settings/
 
-# Operating System files
+# Operating System Temporary Files
 Thumbs.db
 ehthumbs.db
 Desktop.ini
@@ -84,10 +96,12 @@ $RECYCLE.BIN/
 .DS_Store
 ._*
 
-# Testing, Type Checking & Code Coverage
+# Testing, Code Quality & Coverage
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
+.tox/
+.nox/
 .mypy_cache/
 .ruff_cache/

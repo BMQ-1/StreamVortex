@@ -159,11 +159,33 @@ class TestStreamVortex(unittest.TestCase):
             ok, msg = install_optimized_configs(td_path)
             self.assertTrue(ok)
             self.assertTrue((td_path / "yt-dlp.conf").exists())
-            self.assertTrue((td_path / "tiktok-live.conf.txt").exists())
             with open(td_path / "yt-dlp.conf", "r", encoding="utf-8") as f:
                 content = f.read()
                 self.assertIn("-o", content)
                 self.assertIn("av01", content)
+
+    def test_update_ytdlp_conf_destinations(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import update_ytdlp_conf_destinations, get_conf_download_dir
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            conf_file = td_path / "yt-dlp.conf"
+            custom_dl = td_path / "CustomDownloads"
+            custom_dl.mkdir()
+
+            ok, msg = update_ytdlp_conf_destinations(custom_dl, conf_path=conf_file)
+            self.assertTrue(ok)
+            self.assertTrue(conf_file.exists())
+
+            content = conf_file.read_text(encoding="utf-8")
+            self.assertIn(str(custom_dl).replace("/", "\\"), content)
+            self.assertIn("subtitle:", content)
+            self.assertIn("thumbnail:", content)
+
+            detected = get_conf_download_dir(conf_file)
+            self.assertEqual(detected.resolve(), custom_dl.resolve())
 
     def test_download_manager(self):
         from ytdlp_smartstream.engine import DownloadManager
@@ -223,6 +245,112 @@ class TestStreamVortex(unittest.TestCase):
         has_space, free_gb = check_free_disk_space()
         self.assertIsInstance(has_space, bool)
         self.assertGreater(free_gb, 0.0)
+
+    def test_get_conf_format(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import get_conf_format
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf") as tf:
+            tf.write("# -f 1080p\n-f \"(bestvideo[height<=720]+bestaudio/best[height<=720])\"\n--merge-output-format mkv\n")
+            tf_path = Path(tf.name)
+
+        try:
+            fmt = get_conf_format(tf_path)
+            self.assertEqual(fmt, "(bestvideo[height<=720]+bestaudio/best[height<=720])")
+        finally:
+            tf_path.unlink(missing_ok=True)
+
+    def test_build_format_args_best_overrides_720p_conf(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import build_format_args
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf") as tf:
+            tf.write("-f \"(bestvideo[height<=720]+bestaudio/best[height<=720])\"\n")
+            tf_path = Path(tf.name)
+
+        try:
+            # Test 'bestquality', 'best', and 'max'
+            for pref in ["bestquality", "best", "max"]:
+                args, reason = build_format_args(quality_preference=pref, conf_path=tf_path)
+                self.assertIn("-f", args)
+                f_idx = args.index("-f")
+                self.assertEqual(args[f_idx + 1], "(bestvideo+bestaudio/best)")
+                self.assertIn("-S", args)
+                self.assertIn("overriding", reason.lower())
+                self.assertIn("720", reason)
+        finally:
+            tf_path.unlink(missing_ok=True)
+
+    def test_build_format_args_respect_conf(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import build_format_args
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf") as tf:
+            tf.write("-f \"(bestvideo[height<=720]+bestaudio/best[height<=720])\"\n")
+            tf_path = Path(tf.name)
+
+        try:
+            args, reason = build_format_args(quality_preference="conf", conf_path=tf_path)
+            self.assertEqual(args, [])
+            self.assertIn("Respecting", reason)
+            self.assertIn("720", reason)
+        finally:
+            tf_path.unlink(missing_ok=True)
+
+    def test_build_format_args_audio_overrides_video_conf(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.engine import build_format_args
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf") as tf:
+            tf.write("-f \"(bestvideo[height>=1440]+bestaudio)\"\n--merge-output-format mkv\n")
+            tf_path = Path(tf.name)
+
+        try:
+            args, reason = build_format_args(quality_preference="audio_mp3", conf_path=tf_path)
+            self.assertIn("-f", args)
+            f_idx = args.index("-f")
+            self.assertEqual(args[f_idx + 1], "bestaudio/best")
+            self.assertIn("--no-keep-video", args)
+            self.assertIn("pure audio", reason.lower())
+        finally:
+            tf_path.unlink(missing_ok=True)
+
+    def test_build_format_args_explicit_resolutions(self):
+        from ytdlp_smartstream.engine import build_format_args
+
+        # 1080p
+        args_1080, _ = build_format_args("1080p")
+        self.assertIn("-f", args_1080)
+        self.assertIn("height<=1080", args_1080[args_1080.index("-f") + 1])
+        self.assertIn("--merge-output-format", args_1080)
+        self.assertIn("mp4", args_1080)
+
+        # 720p
+        args_720, _ = build_format_args("720p")
+        self.assertIn("-f", args_720)
+        self.assertIn("height<=720", args_720[args_720.index("-f") + 1])
+
+        # 480p
+        args_480, _ = build_format_args("480p")
+        self.assertIn("-f", args_480)
+        self.assertIn("height<=480", args_480[args_480.index("-f") + 1])
+
+    def test_build_format_args_live_stream(self):
+        from ytdlp_smartstream.engine import build_format_args
+
+        args_live, reason = build_format_args("max", is_live=True)
+        self.assertIn("-f", args_live)
+        self.assertEqual(args_live[args_live.index("-f") + 1], "best/bestvideo+bestaudio/b")
+        self.assertIn("Live stream", reason)
+
+
+    def test_version(self):
+        import ytdlp_smartstream
+        self.assertEqual(ytdlp_smartstream.__version__, "1.0")
 
 
 if __name__ == "__main__":
