@@ -42,28 +42,27 @@ def run_doctor() -> bool:
         all_ok = False
 
     # 2. FFmpeg Check
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path:
+    from .engine import find_ytdlp, find_ffmpeg
+    ffmpeg_bin = find_ffmpeg()
+    if ffmpeg_bin:
         try:
-            res = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, timeout=3)
+            res = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, text=True, timeout=3)
             first_line = res.stdout.splitlines()[0] if res.stdout else "Available"
             checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": first_line[:50]})
         except Exception:
-            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": ffmpeg_path})
+            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": ffmpeg_bin})
     else:
-        checks.append({"name": "FFmpeg Engine", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Not found on PATH (Recording falls back to yt-dlp)"})
+        checks.append({"name": "FFmpeg Engine", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Not found on PATH or C:\\Tools (Recording falls back to yt-dlp)"})
 
     # 3. yt-dlp Check
-    ytdlp_path = shutil.which("yt-dlp")
-    if ytdlp_path:
-        try:
-            res = subprocess.run([ytdlp_path, "--version"], capture_output=True, text=True, timeout=3)
-            ver = res.stdout.strip()
-            checks.append({"name": "yt-dlp Core", "status": "[bold green]PASS[/bold green]", "detail": f"v{ver} ({Path(ytdlp_path).name})"})
-        except Exception:
-            checks.append({"name": "yt-dlp Core", "status": "[bold green]PASS[/bold green]", "detail": ytdlp_path})
-    else:
-        checks.append({"name": "yt-dlp Core", "status": "[bold red]FAIL[/bold red]", "detail": "yt-dlp not found on PATH"})
+    ytdlp_cmd = find_ytdlp()
+    try:
+        res = subprocess.run(ytdlp_cmd + ["--version"], capture_output=True, text=True, timeout=3)
+        ver = res.stdout.strip()
+        binary_label = ytdlp_cmd[0]
+        checks.append({"name": "yt-dlp Core Engine", "status": "[bold green]PASS[/bold green]", "detail": f"v{ver} ({binary_label})"})
+    except Exception:
+        checks.append({"name": "yt-dlp Core Engine", "status": "[bold red]FAIL[/bold red]", "detail": "yt-dlp not found on PATH, C:\\Tools, or python module"})
         all_ok = False
 
     # 4. Playwright Chromium Check

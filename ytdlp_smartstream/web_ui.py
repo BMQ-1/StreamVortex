@@ -99,10 +99,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         ⚡
       </div>
       <div>
-        <h1 class="text-xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
-          StreamVortex
-        </h1>
-        <p class="text-xs text-slate-400 mono">v1.0.0 // Universal Stream Studio</p>
+        <div class="flex items-center gap-2">
+          <h1 class="text-xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+            StreamVortex
+          </h1>
+          <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 mono">
+            Powered by yt-dlp
+          </span>
+        </div>
+        <p class="text-xs text-slate-400 mono">v1.0.0 // Intelligent Stream &amp; Live Studio</p>
       </div>
     </div>
 

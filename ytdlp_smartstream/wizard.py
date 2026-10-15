@@ -37,8 +37,8 @@ def run_wizard():
         console.clear()
         console.print(
             Panel.fit(
-                "[bold cyan]⚡ StreamVortex Interactive Control Center[/bold cyan]\n"
-                "[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio[/dim]",
+                "[bold cyan]⚡ StreamVortex Control Center[/bold cyan] [bold white](Powered by yt-dlp)[/bold white]\n"
+                "[dim]Universal Stream Sniffer, Live Watchdog & Recording Studio for yt-dlp[/dim]",
                 border_style="bright_blue"
             )
         )
@@ -46,12 +46,12 @@ def run_wizard():
         choice = questionary.select(
             "What would you like to do?",
             choices=[
-                "⚡ Quick Stream Sniffer & Player (Paste any URL)",
-                "🔴 TikTok Live Downloader / Watchdog",
-                "🌐 Open Web Dashboard (Recommended for beginners)",
-                "🎵 Extract Audio Only (MP3)",
+                "⚡ Quick Stream Sniffer & Downloader (Paste any URL)",
+                "🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)",
+                "🌐 Open Web Studio (Recommended for beginners)",
+                "🎵 Extract Audio Only MP3 (via yt-dlp)",
                 "📁 Open Downloads Folder",
-                "🩺 System Diagnostics & Doctor",
+                "🩺 System Diagnostics & yt-dlp Health Check",
                 "🚪 Exit"
             ],
             style=questionary.Style([
@@ -247,3 +247,8 @@ def _play_url(url: str, user_agent: str = None):
     if user_agent and "mpv" in player.lower():
         cmd.extend([f"--user-agent={user_agent}"])
     subprocess.run(cmd)
+
+
+if __name__ == "__main__":
+    run_wizard()
+

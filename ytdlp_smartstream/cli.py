@@ -47,7 +47,7 @@ BANNER = """
 def print_banner():
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle="[bold white]v1.0.0[/bold white] [dim]| Resilient HLS/DASH/VOD Intelligence Engine[/dim]",
+        subtitle="[bold white]v1.0.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -87,7 +87,7 @@ def display_formats_table(media: TikTokMediaResult):
 def main():
     parser = argparse.ArgumentParser(
         prog="streamvortex",
-        description="StreamVortex // Resilient HLS/DASH/VOD Stream Extraction & Recording Engine"
+        description="StreamVortex // Powered by yt-dlp - Resilient Stream Extraction & Watchdog Engine"
     )
     parser.add_argument("url", nargs="?", default="", help="Target live or video URL")
     parser.add_argument("--download", "-d", action="store_true", help="Download stream using yt-dlp")

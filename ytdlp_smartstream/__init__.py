@@ -32,8 +32,16 @@ from .config import (
     remove_from_watchlist
 )
 from .doctor import run_doctor
-from .wizard import run_wizard
-from .web_ui import launch_web_ui
+
+
+def __getattr__(name: str):
+    if name == "run_wizard":
+        from .wizard import run_wizard
+        return run_wizard
+    if name == "launch_web_ui":
+        from .web_ui import launch_web_ui
+        return launch_web_ui
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "smart_sniff",

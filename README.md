@@ -1,14 +1,14 @@
-# ⚡ StreamVortex
+# ⚡ StreamVortex: Intelligent Stream Sniffer & Downloader Engine for yt-dlp
 
 <p align="center">
   <img src="https://img.shields.io/badge/StreamVortex-v1.0.0-00f2fe?style=for-the-badge&logo=fastapi&logoColor=black" alt="Version" />
-  <img src="https://img.shields.io/badge/yt--dlp-Plugin_Ready-red?style=for-the-badge&logo=youtube" alt="yt-dlp" />
+  <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube" alt="yt-dlp" />
   <img src="https://img.shields.io/badge/Python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue?style=for-the-badge&logo=python" alt="Python" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-purple?style=for-the-badge" alt="Platform" />
 </p>
 
-> **Universal Stream Intelligence Studio, Live Watchdog, & Native yt-dlp Plugin Engine**
+> **Universal Stream Intelligence Studio, Live Watchdog, & Native yt-dlp Plugin Engine (Powered by yt-dlp)**
 
 ```text
    _____ _                              _    _            _            
