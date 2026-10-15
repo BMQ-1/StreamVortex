@@ -561,15 +561,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           const pct = Math.min(100, Math.max(0, j.progress || 0));
           const isDone = j.status === 'completed';
           const isFail = j.status === 'failed';
-          const statusColor = isDone ? 'text-emerald-400' : (isFail ? 'text-red-400' : 'text-cyan-400');
+          const isCapturing = j.status === 'capturing' || (j.is_live && pct === 0 && !isDone && !isFail);
+          const statusColor = isDone ? 'text-emerald-400' : (isFail ? 'text-red-400' : (isCapturing ? 'text-rose-400 animate-pulse' : 'text-cyan-400'));
+          const badgeText = isDone ? 'COMPLETED' : (isFail ? 'FAILED' : (isCapturing ? '🔴 CAPTURING' : pct.toFixed(1) + '%'));
+          const barWidth = isCapturing ? '100%' : `${pct}%`;
+          const barClass = isCapturing ? 'h-full bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 rounded-full animate-pulse' : 'h-full bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all duration-300';
 
           item.innerHTML = `
             <div class="flex items-center justify-between">
               <span class="font-bold text-white truncate max-w-md">${j.title}</span>
-              <span class="mono ${statusColor} font-bold">${isDone ? 'COMPLETED' : (isFail ? 'FAILED' : pct.toFixed(1) + '%')}</span>
+              <span class="mono ${statusColor} font-bold">${badgeText}</span>
             </div>
             <div class="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden border border-white/5">
-              <div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all duration-300" style="width: ${pct}%"></div>
+              <div class="${barClass}" style="width: ${barWidth}"></div>
             </div>
             <div class="flex items-center justify-between text-[11px] text-slate-400 mono">
               <span>${j.status.toUpperCase()}</span>
@@ -839,7 +843,9 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
                     DOWNLOAD_MANAGER.update_job(job_id, progress=0.0, status="downloading")
 
                 def on_prog(pct, speed, eta):
-                    DOWNLOAD_MANAGER.update_job(job_id, progress=pct, speed=speed, eta=eta, status="downloading")
+                    status = "capturing" if pct is None else "downloading"
+                    prog_val = 0.0 if pct is None else pct
+                    DOWNLOAD_MANAGER.update_job(job_id, progress=prog_val, speed=speed, eta=eta, status=status)
 
                 ret = run_ytdlp_download(
                     stream_url=stream_url,

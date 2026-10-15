@@ -673,19 +673,39 @@ def build_format_args(
     ], f"Enforcing Maximum/Best quality profile (unconstrained 4K/2K/1080p){conf_label}"
 
 
+RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+}
+
+
 def sanitize_filename(name: str, max_length: int = 150) -> str:
-    """Sanitizes a string to be a safe, clean Windows/Unix filename."""
+    """
+    Sanitizes a string to be a safe, clean Windows/Unix filename.
+    Guards against:
+    - Windows invalid characters (\ / : * ? " < > |)
+    - Control characters and unprintable symbols
+    - Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    - Trailing spaces and dots which trigger filesystem errors
+    """
     if not name:
         return "media"
-    # Replace invalid Windows filename characters: \ / : * ? " < > |
     invalid_chars = r'\/:*?"<>|'
     cleaned = "".join(c if c not in invalid_chars else (" - " if c in ":/" else " ") for c in name)
-    cleaned = "".join(c for c in cleaned if c.isprintable())
+    cleaned = "".join(c for c in cleaned if c.isprintable() and ord(c) >= 32 and ord(c) != 127)
     cleaned = " ".join(cleaned.split())
     cleaned = cleaned.strip(". ")
     if not cleaned:
         cleaned = "media"
-    return cleaned[:max_length].rstrip(". ")
+    cleaned = cleaned[:max_length].rstrip(". ")
+
+    # Windows reserved device names protection
+    stem_check = cleaned.split(".")[0].strip().upper()
+    if stem_check in RESERVED_NAMES:
+        cleaned = f"media_{cleaned}"
+
+    return cleaned
 
 
 def sanitize_title_for_filename(
@@ -712,10 +732,16 @@ def sanitize_title_for_filename(
 
 
 def clean_target_url(url: str) -> str:
-    """Cleans and sanitizes a stream URL, stripping tracking tokens and formatting artifacts."""
+    """
+    Cleans and sanitizes a stream URL, stripping tracking tokens, leading dashes (option injection guard),
+    and formatting artifacts.
+    """
     if not url:
         return ""
-    url = url.strip().strip("'\"<>")
+    url = url.strip().strip(''"<>')
+    # Prevent option injection if URL starts with dashes
+    while url.startswith("-"):
+        url = url.lstrip("-").strip()
     try:
         parsed = urllib.parse.urlsplit(url)
         if parsed.query:
@@ -956,8 +982,43 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
     }
 
 
+def cleanup_empty_or_broken_files(target_dir: Path, target_stem: Optional[str] = None):
+    """
+    Cleans up 0-byte ghost files, leftover .part, and .ytdl temporary artifacts
+    after an interrupted, failed, or cancelled download or recording.
+    """
+    if not target_dir or not target_dir.exists():
+        return
+    try:
+        patterns = ["*.part", "*.ytdl", "*.part-Frag*"]
+        if target_stem:
+            clean_stem = sanitize_filename(target_stem)
+            patterns.extend([f"{clean_stem}*.part", f"{clean_stem}*.ytdl", f"*{clean_stem}*.part"])
+
+        for pat in patterns:
+            for f in target_dir.glob(pat):
+                try:
+                    if f.is_file():
+                        f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        if target_stem:
+            clean_stem = sanitize_filename(target_stem)
+            for f in target_dir.glob(f"{clean_stem}.*"):
+                try:
+                    if f.is_file() and f.stat().st_size == 0:
+                        f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 PROGRESS_REGEX = re.compile(r'\[download\]\s+([\d\.]+)%\s+of\s+~?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)')
 PROGRESS_SIMPLE_REGEX = re.compile(r'\[download\]\s+([\d\.]+)%')
+PROGRESS_LIVE_REGEX = re.compile(r'\[download\]\s+([\d\.]+[A-Za-z]+)\s+at\s+([^\s]+)(?:\s+\(([\d:]+)\))?')
+FFMPEG_PROGRESS_REGEX = re.compile(r'size=\s*([^\s]+)\s+time=\s*([\d:.]+)\s+bitrate=\s*([^\s]+)\s+speed=\s*([^\s]+)')
 
 
 class DownloadManager:
@@ -1043,8 +1104,17 @@ def run_ytdlp_download(
     d_dir = get_download_dir()
     stream_url = clean_target_url(stream_url)
 
-    # Disk space pre-check
-    has_space, free_gb = check_free_disk_space(d_dir, min_gb=0.5)
+    # Disk space pre-check (safety guard)
+    has_critical, free_gb = check_free_disk_space(d_dir, min_gb=0.1)
+    if not has_critical:
+        err_msg = f"[Storage Guard] Download aborted: Critically low disk space ({free_gb:.2f} GB free, minimum 0.1 GB required)."
+        if on_output:
+            on_output(err_msg)
+        else:
+            print(err_msg)
+        return 1
+
+    has_space, _ = check_free_disk_space(d_dir, min_gb=0.5)
     if not has_space:
         low_msg = f"[Storage Alert] Low disk space detected ({free_gb:.1f} GB free). Continuing with download..."
         if on_output:
@@ -1052,7 +1122,6 @@ def run_ytdlp_download(
 
     cmd = list(ytdlp_cmd)
 
-    # 1. Config Discovery & Injection
     # 1. Config Discovery & Injection
     conf = Path(conf_path) if conf_path else find_ytdlp_conf()
 
@@ -1063,8 +1132,6 @@ def run_ytdlp_download(
             on_output(msg)
         else:
             print(msg)
-
-    cmd.append(stream_url)
 
     # 2. Output Filename & Template Handling
     has_conf_output = conf_has_output_template(conf) if conf else False
@@ -1139,6 +1206,9 @@ def run_ytdlp_download(
         "--progress"
     ])
 
+    # Option injection safety: append target stream URL at the very end
+    cmd.extend(["--", stream_url])
+
     # Configure execution environment with aria2c in PATH if present
     env = os.environ.copy()
     aria_bin = find_aria2c()
@@ -1146,7 +1216,9 @@ def run_ytdlp_download(
         aria_dir = str(Path(aria_bin).parent)
         env["PATH"] = aria_dir + os.pathsep + env.get("PATH", "")
 
-    # 6. Run process with live output streaming & progress parsing
+    # 6. Run process with live output streaming, progress parsing & fault isolation
+    target_clean_stem = Path(out_path_label).stem if (out_path_label and not out_path_label.startswith("Configured in")) else (title or "media")
+
     if on_output or progress_callback:
         proc = subprocess.Popen(
             cmd,
@@ -1157,30 +1229,47 @@ def run_ytdlp_download(
             errors="replace",
             env=env
         )
-        for line in proc.stdout:
-            clean_line = line.strip()
-            if on_output:
-                on_output(clean_line)
-            if progress_callback and clean_line:
-                m = PROGRESS_REGEX.search(clean_line)
-                if m:
-                    try:
-                        pct = float(m.group(1))
-                        speed = m.group(3)
-                        eta = m.group(4)
-                        progress_callback(pct, speed, eta)
-                    except Exception:
-                        pass
-                else:
-                    m_simple = PROGRESS_SIMPLE_REGEX.search(clean_line)
-                    if m_simple:
+        try:
+            for line in proc.stdout:
+                clean_line = line.strip()
+                if on_output:
+                    on_output(clean_line)
+                if progress_callback and clean_line:
+                    m = PROGRESS_REGEX.search(clean_line)
+                    if m:
                         try:
-                            pct = float(m_simple.group(1))
-                            progress_callback(pct, "--", "--")
+                            pct = float(m.group(1))
+                            speed = m.group(3)
+                            eta = m.group(4)
+                            progress_callback(pct, speed, eta)
                         except Exception:
                             pass
-        proc.wait()
-        retcode = proc.returncode
+                    else:
+                        m_simple = PROGRESS_SIMPLE_REGEX.search(clean_line)
+                        if m_simple:
+                            try:
+                                pct = float(m_simple.group(1))
+                                progress_callback(pct, "--", "--")
+                            except Exception:
+                                pass
+                        else:
+                            m_live = PROGRESS_LIVE_REGEX.search(clean_line)
+                            if m_live:
+                                try:
+                                    bytes_down = m_live.group(1)
+                                    speed = m_live.group(2)
+                                    elapsed = m_live.group(3) or "--"
+                                    progress_callback(None, speed, f"{bytes_down} ({elapsed})")
+                                except Exception:
+                                    pass
+            proc.wait()
+            retcode = proc.returncode
+        except (KeyboardInterrupt, Exception) as e:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            cleanup_empty_or_broken_files(target_dir, target_stem=target_clean_stem)
+            return 1
     else:
         retcode = subprocess.run(cmd, env=env).returncode
 
@@ -1192,6 +1281,9 @@ def run_ytdlp_download(
             stream_url=stream_url,
             media_type="audio" if (audio_only or quality_preference in ("audio_mp3", "audio_m4a")) else ("live" if is_live else "video")
         )
+    else:
+        # Automatic cleanup on failed or aborted download
+        cleanup_empty_or_broken_files(target_dir, target_stem=target_clean_stem)
 
     return retcode
 
@@ -1202,17 +1294,37 @@ def run_ffmpeg_record(
     headers: Optional[Dict[str, str]] = None,
     max_duration_seconds: Optional[int] = None,
     title: Optional[str] = None,
-    uploader: Optional[str] = None
+    uploader: Optional[str] = None,
+    on_output: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[Optional[float], str, str], None]] = None
 ) -> int:
     """
     Direct, lossless stream recording via FFmpeg.
-    Automatically generates descriptive filenames using the actual title and uploader.
+    Automatically generates descriptive filenames using the actual title and uploader,
+    streams real-time stderr progress, finalizes cleanly with +faststart, and
+    cleans up empty or broken files on failure.
     """
     ffmpeg_bin = find_ffmpeg()
     if not ffmpeg_bin:
-        return run_ytdlp_download(stream_url, output_filename=output_filename, title=title, uploader=uploader, is_live=True)
+        return run_ytdlp_download(
+            stream_url,
+            output_filename=output_filename,
+            title=title,
+            uploader=uploader,
+            is_live=True,
+            on_output=on_output,
+            progress_callback=progress_callback
+        )
 
     d_dir = get_download_dir()
+
+    # Disk space check
+    has_critical, free_gb = check_free_disk_space(d_dir, min_gb=0.1)
+    if not has_critical:
+        err_msg = f"[Storage Guard] Live recording aborted: Critically low disk space ({free_gb:.2f} GB free)."
+        if on_output:
+            on_output(err_msg)
+        return 1
 
     if output_filename:
         out_path = Path(output_filename)
@@ -1243,15 +1355,57 @@ def run_ffmpeg_record(
     if max_duration_seconds:
         cmd.extend(["-t", str(max_duration_seconds)])
 
-    # Lossless stream copy
-    cmd.extend(["-c", "copy", str(out_path)])
+    # Lossless stream copy with faststart for crash resistance & instant playback
+    cmd.extend(["-c", "copy", "-movflags", "+faststart", str(out_path)])
 
-    proc = subprocess.run(cmd)
-    if proc.returncode == 0:
+    retcode = 1
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        for line in proc.stderr:
+            clean_line = line.strip()
+            if on_output:
+                on_output(clean_line)
+            if progress_callback and clean_line:
+                m = FFMPEG_PROGRESS_REGEX.search(clean_line)
+                if m:
+                    size = m.group(1)
+                    t_str = m.group(2)
+                    bitrate = m.group(3)
+                    speed = m.group(4)
+                    progress_callback(None, f"{speed} ({bitrate})", f"{t_str} ({size})")
+        proc.wait()
+        retcode = proc.returncode
+    except KeyboardInterrupt:
+        if proc.poll() is None:
+            try:
+                proc.stdin.write("q\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        retcode = 0
+    except Exception as e:
+        if on_output:
+            on_output(f"[FFmpeg Error] {e}")
+        retcode = 1
+
+    # Cleanup if aborted or 0-byte ghost file
+    if retcode != 0 or (out_path.exists() and out_path.stat().st_size == 0):
+        cleanup_empty_or_broken_files(d_dir, out_path.stem)
+    elif out_path.exists() and out_path.stat().st_size > 0:
         add_history_entry(
             title=title or out_path.stem,
             filename=str(out_path),
             stream_url=stream_url,
             media_type="live_record"
         )
-    return proc.returncode
+
+    return retcode

@@ -3,7 +3,6 @@ Unit and integration tests for StreamVortex.
 """
 
 import unittest
-from unittest.mock import patch
 from ytdlp_smartstream.sniffer import sniff_static
 from ytdlp_smartstream.tiktok_resolver import (
     _parse_stream_data_json,
@@ -72,9 +71,7 @@ class TestStreamVortex(unittest.TestCase):
         self.assertTrue(res.is_live)
         self.assertEqual(len(res.formats), 1)
 
-    @patch("ytdlp_smartstream.recorder.pyperclip.copy", create=True)
-    def test_copy_to_clipboard(self, mock_copy):
-        mock_copy.return_value = None
+    def test_copy_to_clipboard(self):
         success = copy_to_clipboard("https://pull-hls.example.com/test.m3u8")
         self.assertTrue(success)
 
@@ -363,6 +360,67 @@ class TestStreamVortex(unittest.TestCase):
         self.assertIn("Live stream", reason)
 
 
+    def test_sanitize_filename_reserved_names(self):
+        from ytdlp_smartstream.engine import sanitize_filename
+        self.assertEqual(sanitize_filename("CON"), "media_CON")
+        self.assertEqual(sanitize_filename("aux.mp4"), "media_aux.mp4")
+        self.assertEqual(sanitize_filename("NUL"), "media_NUL")
+        self.assertEqual(sanitize_filename("com1"), "media_com1")
+        self.assertEqual(sanitize_filename("lpt3.mkv"), "media_lpt3.mkv")
+        # Regular safe names should not be touched
+        self.assertEqual(sanitize_filename("concert_live"), "concert_live")
+
+    def test_clean_target_url_injection_defense(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        # Strips leading dashes meant for CLI option injection
+        dirty_url = "--output evil.sh https://www.youtube.com/watch?v=12345&utm_source=share"
+        cleaned = clean_target_url(dirty_url)
+        self.assertFalse(cleaned.startswith("-"))
+        self.assertNotIn("utm_source", cleaned)
+
+    def test_progress_live_regex(self):
+        from ytdlp_smartstream.engine import PROGRESS_LIVE_REGEX
+        line = "[download]  14.25MiB at    1.50MiB/s (00:01:23)"
+        m = PROGRESS_LIVE_REGEX.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "14.25MiB")
+        self.assertEqual(m.group(2), "1.50MiB/s")
+        self.assertEqual(m.group(3), "00:01:23")
+
+    def test_ffmpeg_progress_regex(self):
+        from ytdlp_smartstream.engine import FFMPEG_PROGRESS_REGEX
+        line = "frame= 1245 fps= 30 q=-1.0 size=   18432kB time=00:01:02.34 bitrate=2422.1kbits/s speed=1.01x"
+        m = FFMPEG_PROGRESS_REGEX.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "18432kB")
+        self.assertEqual(m.group(2), "00:01:02.34")
+        self.assertEqual(m.group(3), "2422.1kbits/s")
+        self.assertEqual(m.group(4), "1.01x")
+
+    def test_cleanup_empty_or_broken_files(self):
+        import tempfile
+        from ytdlp_smartstream.engine import cleanup_empty_or_broken_files
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            # Create a 0-byte file
+            ghost_file = td_path / "test_stream.mp4"
+            ghost_file.write_bytes(b"")
+
+            # Create an incomplete .part file
+            part_file = td_path / "test_stream.mp4.part"
+            part_file.write_bytes(b"partial content")
+
+            # Create a valid non-empty file
+            valid_file = td_path / "other_valid.mp4"
+            valid_file.write_bytes(b"valid content here")
+
+            cleanup_empty_or_broken_files(td_path, target_stem="test_stream")
+
+            self.assertFalse(ghost_file.exists(), "Ghost 0-byte file should have been cleaned up")
+            self.assertFalse(part_file.exists(), "Part file should have been cleaned up")
+            self.assertTrue(valid_file.exists(), "Valid non-empty file should remain untouched")
+
     def test_version(self):
         import ytdlp_smartstream
         self.assertEqual(ytdlp_smartstream.__version__, "1.0")
@@ -370,3 +428,4 @@ class TestStreamVortex(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

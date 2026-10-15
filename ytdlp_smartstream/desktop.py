@@ -551,11 +551,18 @@ class StreamVortexApp:
                 self.root.after(0, lambda l=line: self._log(f"[yt-dlp] {l}"))
 
             def on_prog(pct, speed, eta):
-                self.root.after(0, lambda: self.progress_bar.configure(value=pct))
-                self.root.after(0, lambda: self.download_speed_lbl.config(
-                    text=f"⚡ {pct:.1f}% • {speed} • ETA: {eta}",
-                    bootstyle="info"
-                ))
+                if pct is not None:
+                    self.root.after(0, lambda p=pct: self.progress_bar.configure(value=p))
+                    self.root.after(0, lambda p=pct, s=speed, e=eta: self.download_speed_lbl.config(
+                        text=f"⚡ {p:.1f}% • {s} • ETA: {e}",
+                        bootstyle="info"
+                    ))
+                else:
+                    self.root.after(0, lambda: self.progress_bar.step(2))
+                    self.root.after(0, lambda s=speed, e=eta: self.download_speed_lbl.config(
+                        text=f"🔴 LIVE • {s} • {e}",
+                        bootstyle="info"
+                    ))
 
             ret = run_ytdlp_download(
                 stream_url=url,
@@ -607,7 +614,25 @@ class StreamVortexApp:
                         uploader = res.uploader
 
             self.root.after(0, lambda: self._log(f"[Record] Capturing '{title}' by @{uploader or 'stream'} via FFmpeg..."))
-            ret = run_ffmpeg_record(stream_target, headers=headers, title=title, uploader=uploader)
+
+            def on_out(line):
+                self.root.after(0, lambda l=line: self._log(f"[FFmpeg] {l}"))
+
+            def on_prog(pct, speed, eta):
+                self.root.after(0, lambda: self.progress_bar.step(2))
+                self.root.after(0, lambda s=speed, e=eta: self.download_speed_lbl.config(
+                    text=f"🔴 REC • {s} • {e}",
+                    bootstyle="danger"
+                ))
+
+            ret = run_ffmpeg_record(
+                stream_target,
+                headers=headers,
+                title=title,
+                uploader=uploader,
+                on_output=on_out,
+                progress_callback=on_prog
+            )
             if ret == 0:
                 self.root.after(0, lambda: self.download_speed_lbl.config(text="✅ Live Recording Saved!", bootstyle="success"))
                 self.root.after(0, lambda: self._log("[Done] Live recording saved to downloads directory!"))
@@ -637,11 +662,18 @@ class StreamVortexApp:
                 self.root.after(0, lambda l=line: self._log(f"[yt-dlp] {l}"))
 
             def on_prog(pct, speed, eta):
-                self.root.after(0, lambda: self.progress_bar.configure(value=pct))
-                self.root.after(0, lambda: self.download_speed_lbl.config(
-                    text=f"🎵 {pct:.1f}% • {speed} • ETA: {eta}",
-                    bootstyle="warning"
-                ))
+                if pct is not None:
+                    self.root.after(0, lambda p=pct: self.progress_bar.configure(value=p))
+                    self.root.after(0, lambda p=pct, s=speed, e=eta: self.download_speed_lbl.config(
+                        text=f"🎵 {p:.1f}% • {s} • ETA: {e}",
+                        bootstyle="warning"
+                    ))
+                else:
+                    self.root.after(0, lambda: self.progress_bar.step(2))
+                    self.root.after(0, lambda s=speed, e=eta: self.download_speed_lbl.config(
+                        text=f"🎵 EXTRACTING • {s} • {e}",
+                        bootstyle="warning"
+                    ))
 
             ret = run_ytdlp_download(
                 stream_url=url,
