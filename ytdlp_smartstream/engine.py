@@ -18,12 +18,76 @@ from typing import Optional, List, Dict, Any, Callable
 from .config import get_download_dir, get_config, add_history_entry
 
 
+def find_global_python() -> str:
+    """
+    Locates the global Python executable on the device.
+    Prioritizes the system PATH Python, then standard global installation directories.
+    """
+    which_py = shutil.which("python") or shutil.which("python3")
+    if which_py:
+        return which_py
+
+    user_home = Path.home()
+    candidates = [
+        user_home / "AppData/Local/Programs/Python/Python311/python.exe",
+        user_home / "AppData/Local/Programs/Python/Python312/python.exe",
+        user_home / "AppData/Local/Programs/Python/Python310/python.exe",
+        user_home / "AppData/Local/Programs/Python/Python39/python.exe",
+        Path("C:/Python311/python.exe"),
+        Path("C:/Python312/python.exe"),
+        Path("C:/Python310/python.exe"),
+        Path("C:/Program Files/Python311/python.exe"),
+        Path("C:/Program Files/Python312/python.exe"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+
+    return sys.executable
+
+
 def find_ytdlp() -> List[str]:
     """
-    Finds the most reliable yt-dlp executable or Python module runner.
-    Prioritizes local bin/yt-dlp.exe, then C:\\Tools, then PATH.
+    Locates the global yt-dlp executable on the device.
+    Prioritizes:
+    1. System PATH (e.g. C:\\Tools\\yt-dlp.exe)
+    2. C:\\Tools\\yt-dlp.exe
+    3. Global WinGet / AppData / ProgramFiles installations
+    4. Global Python module (python -m yt_dlp)
+    5. Local project fallback (only if no global yt-dlp is available)
     """
-    # 0. Check local bin/yt-dlp.exe
+    # 1. Check system PATH (Global)
+    which_bin = shutil.which("yt-dlp")
+    if which_bin:
+        return [which_bin]
+
+    # 2. Check C:\Tools\yt-dlp.exe (Global)
+    c_tools = Path("C:/Tools/yt-dlp.exe")
+    if c_tools.exists():
+        return [str(c_tools)]
+
+    # 3. Check standard global package locations
+    user_home = Path.home()
+    candidates = [
+        user_home / "AppData/Local/Microsoft/WinGet/Links/yt-dlp.exe",
+        user_home / "AppData/Local/yt-dlp/yt-dlp.exe",
+        Path("C:/Program Files/yt-dlp/yt-dlp.exe"),
+        Path("C:/ProgramData/chocolatey/bin/yt-dlp.exe"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return [str(cand)]
+
+    # 4. Check global Python environment for yt_dlp module
+    global_py = find_global_python()
+    try:
+        res = subprocess.run([global_py, "-m", "yt_dlp", "--version"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0:
+            return [global_py, "-m", "yt_dlp"]
+    except Exception:
+        pass
+
+    # 5. Fallback to local project bin/yt-dlp.exe only if no global tool exists
     if getattr(sys, "frozen", False):
         local_bin = Path(sys.executable).parent / "bin" / "yt-dlp.exe"
     else:
@@ -31,25 +95,39 @@ def find_ytdlp() -> List[str]:
     if local_bin.exists():
         return [str(local_bin)]
 
-    # 1. Check C:\Tools\yt-dlp.exe
-    tool_bin = Path("C:/Tools/yt-dlp.exe")
-    if tool_bin.exists():
-        return [str(tool_bin)]
-
-    # 2. Check system PATH
-    which_bin = shutil.which("yt-dlp")
-    if which_bin:
-        return [which_bin]
-
-    # 3. Fallback to python module
     return [sys.executable, "-m", "yt_dlp"]
 
 
 def find_ffmpeg() -> Optional[str]:
     """
-    Locates FFmpeg executable across local bin/, C:\\Tools, and system PATH.
+    Locates the global FFmpeg executable on the device.
+    Prioritizes:
+    1. System PATH (e.g. C:\\ffmpeg_folder\\... or C:\\Tools\\ffmpeg.exe)
+    2. C:\\ffmpeg_folder\\ffmpeg-essentials_build\\bin\\ffmpeg.exe
+    3. C:\\Tools\\ffmpeg.exe
+    4. Other standard global paths
+    5. Local fallback (only if no global FFmpeg is available)
     """
-    # 0. Check local bin/ffmpeg.exe
+    # 1. Check system PATH (Global)
+    which_bin = shutil.which("ffmpeg")
+    if which_bin:
+        return which_bin
+
+    # 2. Known global paths
+    candidates = [
+        Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffmpeg.exe"),
+        Path("C:/ffmpeg_folder/bin/ffmpeg.exe"),
+        Path("C:/Tools/ffmpeg.exe"),
+        Path("C:/ffmpeg/bin/ffmpeg.exe"),
+        Path("C:/Program Files/ffmpeg/bin/ffmpeg.exe"),
+        Path.home() / "AppData/Local/Microsoft/WinGet/Links/ffmpeg.exe",
+        Path("C:/ProgramData/chocolatey/bin/ffmpeg.exe"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+
+    # 3. Fallback: Local project bin/ffmpeg.exe (only if no global exists)
     if getattr(sys, "frozen", False):
         local_bin = Path(sys.executable).parent / "bin" / "ffmpeg.exe"
     else:
@@ -57,15 +135,44 @@ def find_ffmpeg() -> Optional[str]:
     if local_bin.exists():
         return str(local_bin)
 
-    # 1. Check C:\Tools\ffmpeg.exe
-    tool_bin = Path("C:/Tools/ffmpeg.exe")
-    if tool_bin.exists():
-        return str(tool_bin)
+    return None
 
-    # 2. Check system PATH
-    which_bin = shutil.which("ffmpeg")
+
+def find_ffprobe() -> Optional[str]:
+    """
+    Locates the global FFprobe executable on the device.
+    """
+    # 1. Check system PATH (Global)
+    which_bin = shutil.which("ffprobe")
     if which_bin:
         return which_bin
+
+    # 2. Adjacent to detected ffmpeg
+    ff_bin = find_ffmpeg()
+    if ff_bin:
+        adjacent = Path(ff_bin).parent / "ffprobe.exe"
+        if adjacent.exists():
+            return str(adjacent)
+
+    # 3. Known global paths
+    candidates = [
+        Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffprobe.exe"),
+        Path("C:/ffmpeg_folder/bin/ffprobe.exe"),
+        Path("C:/Tools/ffprobe.exe"),
+        Path("C:/ffmpeg/bin/ffprobe.exe"),
+        Path("C:/Program Files/ffmpeg/bin/ffprobe.exe"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+
+    # 4. Fallback: Local project bin/ffprobe.exe
+    if getattr(sys, "frozen", False):
+        local_bin = Path(sys.executable).parent / "bin" / "ffprobe.exe"
+    else:
+        local_bin = Path(__file__).resolve().parent.parent / "bin" / "ffprobe.exe"
+    if local_bin.exists():
+        return str(local_bin)
 
     return None
 
@@ -75,9 +182,9 @@ def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = N
     Intelligently locates the user's yt-dlp configuration file (.conf).
     Prioritizes:
     1. Explicit custom path or configured in ~/.streamvortex/config.json
-    2. C:\\Tools\\tiktok-live.conf.txt (if is_tiktok_live is True)
-    3. C:\\Tools\\yt-dlp.conf (user primary config)
-    4. Project root yt-dlp.conf or bin/yt-dlp.conf
+    2. DIRECTLY NEXT TO THE GLOBAL yt-dlp.exe (e.g. C:\\Tools\\yt-dlp.conf)
+    3. C:\\Tools\\tiktok-live.conf.txt (if is_tiktok_live is True)
+    4. C:\\Tools\\yt-dlp.conf
     5. %APPDATA%\\yt-dlp\\config or %APPDATA%\\yt-dlp.conf
     6. %USERPROFILE%\\yt-dlp.conf or ~/.config/yt-dlp/config
     7. Current working directory yt-dlp.conf
@@ -94,27 +201,37 @@ def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = N
     except Exception:
         pass
 
-    # 2. Specialized TikTok live config
+    # 2. Look DIRECTLY NEXT TO THE GLOBAL yt-dlp.exe!
+    ytdlp_cmd = find_ytdlp()
+    if ytdlp_cmd and not ytdlp_cmd[0].endswith(".py") and "-m" not in ytdlp_cmd:
+        ytdlp_exe_path = Path(ytdlp_cmd[0])
+        if ytdlp_exe_path.exists():
+            ytdlp_dir = ytdlp_exe_path.parent
+
+            # If TikTok live, check for live conf adjacent to global yt-dlp.exe
+            if is_tiktok_live:
+                for name in ["tiktok-live.conf.txt", "tiktok-live.conf", "tiktok_live.conf"]:
+                    adjacent_tiktok = ytdlp_dir / name
+                    if adjacent_tiktok.exists():
+                        return adjacent_tiktok
+
+            # Check for yt-dlp.conf directly adjacent to global yt-dlp.exe
+            for name in ["yt-dlp.conf", "yt-dlp.conf.txt", "config.txt", "config"]:
+                adjacent_conf = ytdlp_dir / name
+                if adjacent_conf.exists():
+                    return adjacent_conf
+
+    # 3. Fallback: Check C:\Tools\ (standard location)
     if is_tiktok_live:
         tiktok_conf = Path("C:/Tools/tiktok-live.conf.txt")
         if tiktok_conf.exists():
             return tiktok_conf
 
-    # 3. User preferred C:\Tools\yt-dlp.conf
     c_tools_conf = Path("C:/Tools/yt-dlp.conf")
     if c_tools_conf.exists():
         return c_tools_conf
 
-    # 4. Project root or bin/
-    try:
-        project_root = Path(__file__).resolve().parent.parent
-        for p in [project_root / "yt-dlp.conf", project_root / "bin" / "yt-dlp.conf"]:
-            if p.exists():
-                return p
-    except Exception:
-        pass
-
-    # 5. Standard yt-dlp config directories
+    # 4. Standard yt-dlp config directories
     try:
         from yt_dlp.utils import get_user_config_dirs
         for d in get_user_config_dirs("yt-dlp"):
@@ -125,11 +242,20 @@ def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = N
     except Exception:
         pass
 
-    # 6. User profile
+    # 5. User profile
     user_home = Path.home()
     for cand in [user_home / "yt-dlp.conf", user_home / ".config" / "yt-dlp" / "config"]:
         if cand.exists():
             return cand
+
+    # 6. Project root or bin/
+    try:
+        project_root = Path(__file__).resolve().parent.parent
+        for p in [project_root / "yt-dlp.conf", project_root / "bin" / "yt-dlp.conf"]:
+            if p.exists():
+                return p
+    except Exception:
+        pass
 
     # 7. Current directory
     cwd_conf = Path.cwd() / "yt-dlp.conf"

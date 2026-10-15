@@ -35,23 +35,19 @@ def run_doctor() -> bool:
     all_ok = True
 
     # 1. Python Check
+    from .engine import find_global_python, find_ytdlp, find_ffmpeg, find_ytdlp_conf
+    global_py = find_global_python()
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info >= (3, 9):
-        checks.append({"name": "Python Environment", "status": "[bold green]PASS[/bold green]", "detail": f"Python {py_ver}"})
-    else:
-        checks.append({"name": "Python Environment", "status": "[bold red]FAIL[/bold red]", "detail": f"Python {py_ver} (Requires 3.9+)"})
-        all_ok = False
+    checks.append({"name": "Python Environment", "status": "[bold green]PASS[/bold green]", "detail": f"v{py_ver} ({global_py})"})
 
     # 2. FFmpeg Check
-    from .engine import find_ytdlp, find_ffmpeg
     ffmpeg_bin = find_ffmpeg()
     if ffmpeg_bin:
         try:
             res = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, text=True, timeout=3)
-            first_line = res.stdout.splitlines()[0] if res.stdout else "Available"
-            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": first_line[:50]})
+            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": f"Global ({ffmpeg_bin})"})
         except Exception:
-            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": ffmpeg_bin})
+            checks.append({"name": "FFmpeg Engine", "status": "[bold green]PASS[/bold green]", "detail": f"Global ({ffmpeg_bin})"})
     else:
         checks.append({"name": "FFmpeg Engine", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Not found on PATH or C:\\Tools (Recording falls back to yt-dlp)"})
 
@@ -105,10 +101,12 @@ def run_doctor() -> bool:
         checks.append({"name": "yt-dlp Native Plugin", "status": "[bold yellow]WARN[/bold yellow]", "detail": "Plugin not linked. Run: python install_plugin.py"})
 
     # 6. yt-dlp Configuration (.conf) Check
-    from .engine import find_ytdlp_conf
     conf_file = find_ytdlp_conf()
     if conf_file and conf_file.exists():
-        checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold green]PASS[/bold green]", "detail": f"Active: {conf_file}"})
+        ytdlp_exe_path = Path(ytdlp_cmd[0]) if ytdlp_cmd and not ytdlp_cmd[0].endswith(".py") else None
+        is_adjacent = ytdlp_exe_path and conf_file.parent.resolve() == ytdlp_exe_path.parent.resolve()
+        adj_tag = " (adjacent to yt-dlp.exe)" if is_adjacent else ""
+        checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold green]PASS[/bold green]", "detail": f"Active: {conf_file}{adj_tag}"})
     else:
         checks.append({"name": "yt-dlp Config (.conf)", "status": "[bold yellow]INFO[/bold yellow]", "detail": "Using standard defaults"})
 

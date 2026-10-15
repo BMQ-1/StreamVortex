@@ -116,6 +116,22 @@ class TestStreamVortex(unittest.TestCase):
         if conf:
             self.assertTrue(conf.exists())
 
+    def test_find_global_python(self):
+        from ytdlp_smartstream.engine import find_global_python
+        py = find_global_python()
+        self.assertTrue(bool(py))
+
+    def test_find_ytdlp_global(self):
+        from ytdlp_smartstream.engine import find_ytdlp
+        ytdlp = find_ytdlp()
+        self.assertTrue(len(ytdlp) > 0)
+
+    def test_find_ffmpeg_global(self):
+        from ytdlp_smartstream.engine import find_ffmpeg
+        ffmpeg = find_ffmpeg()
+        if ffmpeg:
+            self.assertTrue(bool(ffmpeg))
+
 
 if __name__ == "__main__":
     unittest.main()

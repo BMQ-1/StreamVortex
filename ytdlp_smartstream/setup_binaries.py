@@ -77,9 +77,11 @@ def setup_all_binaries(
     progress_callback: Optional[Callable[[str, float], None]] = None
 ) -> Dict[str, Any]:
     """
-    Ensures yt-dlp, FFmpeg, Playwright, and plugins are installed and ready.
-    Returns status dictionary.
+    Verifies global yt-dlp, FFmpeg, Playwright, and plugins on the device.
+    Prioritizes existing global installations and avoids downloading
+    redundant binaries into bin/ when global tools are present.
     """
+    from .engine import find_ytdlp, find_ffmpeg, find_ffprobe, find_ytdlp_conf
     bin_dir = get_bin_dir()
     results = {}
 
@@ -89,90 +91,102 @@ def setup_all_binaries(
         else:
             print(f"[StreamVortex Setup] {msg}")
 
-    # 1. yt-dlp.exe
-    ytdlp_bin = bin_dir / "yt-dlp.exe"
-    if not force_download and ytdlp_bin.exists():
-        report(f"yt-dlp is already present in {ytdlp_bin}", 25.0)
-    else:
-        # Check C:\Tools\yt-dlp.exe first for quick copy
-        c_tools_ytdlp = Path("C:/Tools/yt-dlp.exe")
-        if not force_download and c_tools_ytdlp.exists():
-            report(f"Copying verified yt-dlp.exe from {c_tools_ytdlp} to {bin_dir}...", 10.0)
-            shutil.copy2(c_tools_ytdlp, ytdlp_bin)
-        else:
-            report(f"Downloading latest official yt-dlp.exe from GitHub releases...", 5.0)
-            def on_ytdlp_prog(dl, tot, pct):
-                report(f"Downloading yt-dlp.exe: {dl / 1024 / 1024:.1f} MB / {tot / 1024 / 1024:.1f} MB ({pct:.1f}%)", 5.0 + (pct * 0.2))
-            download_file_with_progress(YTDLP_RELEASE_URL, ytdlp_bin, progress_callback=on_ytdlp_prog)
-
-    # Verify yt-dlp
+    # 1. yt-dlp check (Global first)
+    ytdlp_cmd = find_ytdlp()
+    ytdlp_ready = False
     try:
-        res = subprocess.run([str(ytdlp_bin), "--version"], capture_output=True, text=True, timeout=5)
-        results["yt-dlp"] = {"status": "OK", "version": res.stdout.strip(), "path": str(ytdlp_bin)}
-    except Exception as e:
-        results["yt-dlp"] = {"status": "ERROR", "error": str(e), "path": str(ytdlp_bin)}
+        res = subprocess.run(ytdlp_cmd + ["--version"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            ver = res.stdout.strip()
+            binary_path = ytdlp_cmd[0]
+            report(f"Global yt-dlp verified: {binary_path} (v{ver}) - using global installation", 25.0)
+            results["yt-dlp"] = {"status": "OK", "version": ver, "path": binary_path}
+            ytdlp_ready = True
+    except Exception:
+        pass
 
-    # 2. FFmpeg & FFprobe
-    ffmpeg_bin = bin_dir / "ffmpeg.exe"
-    ffprobe_bin = bin_dir / "ffprobe.exe"
-    if not force_download and ffmpeg_bin.exists() and ffprobe_bin.exists():
-        report(f"FFmpeg & FFprobe already present in {bin_dir}", 60.0)
+    if not ytdlp_ready and force_download:
+        ytdlp_bin = bin_dir / "yt-dlp.exe"
+        report("No global yt-dlp detected. Downloading official yt-dlp.exe...", 5.0)
+        def on_ytdlp_prog(dl, tot, pct):
+            report(f"Downloading yt-dlp.exe: {dl / 1024 / 1024:.1f} MB / {tot / 1024 / 1024:.1f} MB ({pct:.1f}%)", 5.0 + (pct * 0.2))
+        download_file_with_progress(YTDLP_RELEASE_URL, ytdlp_bin, progress_callback=on_ytdlp_prog)
+        try:
+            res = subprocess.run([str(ytdlp_bin), "--version"], capture_output=True, text=True, timeout=5)
+            results["yt-dlp"] = {"status": "OK", "version": res.stdout.strip(), "path": str(ytdlp_bin)}
+        except Exception as e:
+            results["yt-dlp"] = {"status": "ERROR", "error": str(e), "path": str(ytdlp_bin)}
+
+    # 2. FFmpeg & FFprobe check (Global first)
+    ffmpeg_path = find_ffmpeg()
+    ffprobe_path = find_ffprobe()
+    ffmpeg_ready = False
+    if ffmpeg_path:
+        try:
+            res = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                ver = res.stdout.splitlines()[0] if res.stdout else "Available"
+                report(f"Global FFmpeg verified: {ffmpeg_path} - using global installation", 50.0)
+                results["ffmpeg"] = {"status": "OK", "version": ver, "path": ffmpeg_path}
+                ffmpeg_ready = True
+        except Exception:
+            pass
+
+    if ffprobe_path:
+        report(f"Global FFprobe verified: {ffprobe_path}", 60.0)
+        results["ffprobe"] = {"status": "OK", "path": ffprobe_path}
+
+    if not ffmpeg_ready and force_download:
+        ffmpeg_bin = bin_dir / "ffmpeg.exe"
+        ffprobe_bin = bin_dir / "ffprobe.exe"
+        report("No global FFmpeg detected. Downloading official release...", 30.0)
+        zip_dest = bin_dir / "ffmpeg_temp.zip"
+        def on_ffmpeg_prog(dl, tot, pct):
+            report(f"Downloading FFmpeg: {dl / 1024 / 1024:.1f} MB / {tot / 1024 / 1024:.1f} MB ({pct:.1f}%)", 30.0 + (pct * 0.3))
+        if download_file_with_progress(FFMPEG_RELEASE_URL, zip_dest, progress_callback=on_ffmpeg_prog):
+            report("Extracting ffmpeg.exe and ffprobe.exe...", 55.0)
+            try:
+                with zipfile.ZipFile(zip_dest, "r") as z:
+                    for member in z.namelist():
+                        if member.endswith("ffmpeg.exe"):
+                            with z.open(member) as src, open(ffmpeg_bin, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                        elif member.endswith("ffprobe.exe"):
+                            with z.open(member) as src, open(ffprobe_bin, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                if zip_dest.exists():
+                    zip_dest.unlink()
+                results["ffmpeg"] = {"status": "OK", "path": str(ffmpeg_bin)}
+            except Exception as e:
+                report(f"Extraction error: {e}", 55.0)
+
+    # 3. Active yt-dlp config verification
+    conf_file = find_ytdlp_conf()
+    if conf_file and conf_file.exists():
+        report(f"Active yt-dlp config verified: {conf_file} (next to global yt-dlp)", 70.0)
+        results["config"] = {"status": "OK", "path": str(conf_file)}
     else:
-        # Check C:\Tools first
-        c_tools_ffmpeg = Path("C:/Tools/ffmpeg.exe")
-        c_tools_ffprobe = Path("C:/Tools/ffprobe.exe")
-        if not force_download and c_tools_ffmpeg.exists() and c_tools_ffprobe.exists():
-            report(f"Copying verified FFmpeg suite from C:\\Tools to {bin_dir}...", 40.0)
-            shutil.copy2(c_tools_ffmpeg, ffmpeg_bin)
-            shutil.copy2(c_tools_ffprobe, ffprobe_bin)
-        else:
-            report(f"Downloading official FFmpeg release from GitHub...", 30.0)
-            zip_dest = bin_dir / "ffmpeg_temp.zip"
-            def on_ffmpeg_prog(dl, tot, pct):
-                report(f"Downloading FFmpeg suite: {dl / 1024 / 1024:.1f} MB / {tot / 1024 / 1024:.1f} MB ({pct:.1f}%)", 30.0 + (pct * 0.3))
-            if download_file_with_progress(FFMPEG_RELEASE_URL, zip_dest, progress_callback=on_ffmpeg_prog):
-                report("Extracting ffmpeg.exe and ffprobe.exe...", 60.0)
-                try:
-                    with zipfile.ZipFile(zip_dest, "r") as z:
-                        for member in z.namelist():
-                            if member.endswith("ffmpeg.exe"):
-                                with z.open(member) as src, open(ffmpeg_bin, "wb") as dst:
-                                    shutil.copyfileobj(src, dst)
-                            elif member.endswith("ffprobe.exe"):
-                                with z.open(member) as src, open(ffprobe_bin, "wb") as dst:
-                                    shutil.copyfileobj(src, dst)
-                    if zip_dest.exists():
-                        zip_dest.unlink()
-                except Exception as e:
-                    report(f"Extraction error: {e}", 60.0)
+        results["config"] = {"status": "INFO", "path": "Default settings"}
 
-    # Verify FFmpeg
-    try:
-        res = subprocess.run([str(ffmpeg_bin), "-version"], capture_output=True, text=True, timeout=5)
-        ver = res.stdout.splitlines()[0] if res.stdout else "Available"
-        results["ffmpeg"] = {"status": "OK", "version": ver, "path": str(ffmpeg_bin)}
-    except Exception as e:
-        results["ffmpeg"] = {"status": "ERROR", "error": str(e), "path": str(ffmpeg_bin)}
-
-    # 3. Playwright Chromium
-    report("Checking Playwright Chromium driver...", 70.0)
+    # 4. Playwright Chromium
+    report("Checking Playwright Chromium driver...", 80.0)
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             b = p.chromium.launch(headless=True)
             b.close()
         results["playwright"] = {"status": "OK", "detail": "Chromium headless ready"}
-        report("Playwright Chromium headless ready", 85.0)
+        report("Playwright Chromium headless ready", 90.0)
     except Exception:
-        report("Installing Playwright Chromium headless driver...", 75.0)
+        report("Installing Playwright Chromium headless driver...", 82.0)
         try:
             subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True, check=True)
             results["playwright"] = {"status": "OK", "detail": "Installed successfully"}
         except Exception as e:
             results["playwright"] = {"status": "WARN", "detail": f"Could not auto-install: {e}"}
 
-    # 4. Link native yt-dlp plugin
-    report("Registering native yt-dlp plugin...", 90.0)
+    # 5. Link native yt-dlp plugin
+    report("Registering native yt-dlp plugin...", 95.0)
     try:
         config_dirs = list(get_user_config_dirs("yt-dlp"))
         roaming_dir = next((d for d in config_dirs if "Roaming" in str(d)), config_dirs[0])
@@ -191,7 +205,7 @@ def setup_all_binaries(
     except Exception as e:
         results["plugin"] = {"status": "ERROR", "error": str(e)}
 
-    report("Setup complete! All binaries and plugins are ready.", 100.0)
+    report("Setup verification complete! System is using global environment.", 100.0)
     return results
 
 

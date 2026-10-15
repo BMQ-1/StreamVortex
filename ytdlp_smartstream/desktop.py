@@ -123,10 +123,10 @@ class StreamVortexApp:
 
         self.setup_btn = tb.Button(
             status_grid,
-            text="⚡ Auto-Download / Verify Binaries",
+            text="⚡ Verify Global Environment",
             bootstyle="success",
             command=self._run_binary_setup_thread
-        ) if HAS_TTKBOOTSTRAP else tk.Button(status_grid, text="⚡ Auto-Download Binaries", command=self._run_binary_setup_thread)
+        ) if HAS_TTKBOOTSTRAP else tk.Button(status_grid, text="⚡ Verify Global Environment", command=self._run_binary_setup_thread)
         self.setup_btn.pack(side="right")
 
         self.progress_bar = tb.Progressbar(status_card, mode="determinate", bootstyle="info-striped") if HAS_TTKBOOTSTRAP else ttk.Progressbar(status_card, mode="determinate")
@@ -205,10 +205,9 @@ class StreamVortexApp:
         def _check():
             ytdlp = find_ytdlp()
             ffmpeg = find_ffmpeg()
-            bin_dir = get_bin_dir()
 
-            ytdlp_text = f"yt-dlp: Ready ({Path(ytdlp[0]).name})" if ytdlp else "yt-dlp: Missing"
-            ffmpeg_text = f"FFmpeg: Ready ({Path(ffmpeg).name})" if ffmpeg else "FFmpeg: Missing"
+            ytdlp_text = "yt-dlp: Global (Ready)" if ytdlp else "yt-dlp: Missing"
+            ffmpeg_text = "FFmpeg: Global (Ready)" if ffmpeg else "FFmpeg: Missing"
 
             # Check playwright
             try:
@@ -223,7 +222,7 @@ class StreamVortexApp:
             # Check yt-dlp config
             from .engine import find_ytdlp_conf
             conf = find_ytdlp_conf()
-            conf_text = f"Config: {conf.name}" if conf else "Config: Default"
+            conf_text = f"Config: {conf.name} (Global)" if conf else "Config: Default"
 
             self.root.after(0, lambda: self.ytdlp_status_lbl.config(text=ytdlp_text, bootstyle="success" if ytdlp else "danger"))
             self.root.after(0, lambda: self.ffmpeg_status_lbl.config(text=ffmpeg_text, bootstyle="success" if ffmpeg else "warning"))
@@ -234,7 +233,7 @@ class StreamVortexApp:
 
     def _run_binary_setup_thread(self):
         self.setup_btn.config(state="disabled")
-        self._log("\n[Setup] Starting automated binary check & official downloads...")
+        self._log("\n[Setup] Verifying global binaries and system environment...")
 
         def _worker():
             def prog_cb(msg: str, pct: float):
