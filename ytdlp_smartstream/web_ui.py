@@ -30,6 +30,7 @@ from .config import (
     get_watchlist, add_to_watchlist, remove_from_watchlist
 )
 from .recorder import record_stream
+from .onboarding import check_environment_status, launch_onboarding_gui
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -128,6 +129,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="flex items-center gap-3">
+      <button onclick="launchSetupWizard()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-cyan-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1.5 transition-all cursor-pointer">
+        ⚡ Setup Wizard
+      </button>
       <button onclick="openFolder()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-slate-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1.5 transition-all">
         📂 Open Folder
       </button>
@@ -136,6 +140,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <!-- Main Content Container -->
   <main class="flex-1 max-w-6xl w-full mx-auto p-6 flex flex-col gap-6">
+
+    <!-- Environment Warning Banner (shown if yt-dlp or ffmpeg missing) -->
+    <div id="envWarningBanner" class="hidden bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">⚠️</span>
+        <div>
+          <div class="text-sm font-bold text-amber-300">Essential Media Engines Missing</div>
+          <div class="text-xs text-amber-200/70" id="envWarningText">yt-dlp or FFmpeg was not detected on your device. Run the automated 1-click wizard to download and configure them.</div>
+        </div>
+      </div>
+      <button onclick="launchSetupWizard()" class="btn-gradient px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer">
+        🚀 Run 1-Click Setup
+      </button>
+    </div>
 
     <!-- TAB 1: STUDIO -->
     <div id="tab-studio" class="tab-content flex flex-col gap-6">
@@ -486,6 +504,39 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       await fetch('/api/open_folder');
       showToast('Opened downloads folder in Explorer');
     }
+
+    async function checkEnvStatus() {
+      try {
+        const resp = await fetch('/api/status');
+        const data = await resp.json();
+        const banner = document.getElementById('envWarningBanner');
+        const text = document.getElementById('envWarningText');
+        if (!data.is_ready) {
+          let missing = [];
+          if (!data.ytdlp.found) missing.push('yt-dlp');
+          if (!data.ffmpeg.found) missing.push('FFmpeg');
+          text.innerText = `Missing: ${missing.join(', ')}. Click "Run 1-Click Setup" to automatically download and configure everything needed.`;
+          banner.classList.remove('hidden');
+        } else {
+          banner.classList.add('hidden');
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    async function launchSetupWizard() {
+      showToast('Launching 1-Click Setup Wizard in a new window...');
+      try {
+        await fetch('/api/setup');
+      } catch (e) {
+        showToast('Failed to trigger Setup Wizard');
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      checkEnvStatus();
+    });
   </script>
 </body>
 </html>
@@ -505,6 +556,15 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
+            return
+
+        if parsed.path == "/api/status":
+            self._send_json(check_environment_status())
+            return
+
+        if parsed.path == "/api/setup":
+            threading.Thread(target=launch_onboarding_gui, daemon=True).start()
+            self._send_json({"status": "launched"})
             return
 
         if parsed.path == "/api/resolve":

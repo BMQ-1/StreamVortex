@@ -25,12 +25,22 @@
 
 ## 🌟 Key Features
 
+* **📦 Standalone GitHub Release Executable (`StreamVortex.exe`):**
+  * **Zero technical knowledge required!** Users who have never touched Python, `yt-dlp`, or `ffmpeg` can simply download `StreamVortex.exe` from GitHub Releases and launch it immediately.
+* **🚀 1-Click Zero-Setup Media Engine Installer (`streamvortex --onboard`):**
+  * Automatically detects missing components and downloads official `yt-dlp.exe`, `ffmpeg.exe`, and `ffprobe.exe`.
+  * Asks user for a tools directory (defaults to `C:\Tools` or `%USERPROFILE%\Tools`).
+  * Deploys StreamVortex's optimized `yt-dlp.conf` and `tiktok-live.conf.txt` presets **directly adjacent to `yt-dlp.exe`**.
+  * Detects or installs official **Python 3.11** runtime and **VLC Media Player**.
+  * Safely registers the tools folder in Windows User PATH without requiring Administrator elevation.
+  * Modern dark-mode GUI progress bar with real-time feedback.
 * **Beginner-Friendly Interactive Wizard:** Run `streamvortex` or double-click `Launch StreamVortex.bat` to access a guided, menu-driven experience with zero command-line complexity.
 * **Modern Web Studio Dashboard (`streamvortex --web`):**
   * Embedded **HLS.js Live Player** with low-latency playback.
   * 1-Click **Best Video Download** & **MP3 Audio Extraction**.
   * **Live Watchdog Tab**: Monitor multiple creators and track their streaming status.
   * **Downloads History & Explorer Tab**: View saved files and open their folders directly.
+  * Built-in **Setup Wizard** button & missing environment alert banner.
 * **Native `yt-dlp` Terminal Integration:**
   * Uses standard `yt-dlp <URL>` seamlessly in your command line.
   * Overrides broken built-in extractors with resilient multi-tier scrapers.
@@ -45,16 +55,21 @@
 
 ## 🚀 Quick Start for Beginners
 
-### Option A: The One-Click Launcher (No Terminal Required)
-Double-click `Launch StreamVortex.bat` in the project folder. This opens the interactive menu where you can simply pick an option using your arrow keys.
+### Option A: Download Standalone `StreamVortex.exe` (GitHub Releases)
+1. Download **`StreamVortex.exe`** from the **[Releases](https://github.com/basel-shweikani/StreamVortex/releases)** tab.
+2. Double-click `StreamVortex.exe`.
+3. If it is your first time using media tools, StreamVortex automatically detects missing engines and prompts you with the **1-Click Zero-Setup Wizard** to download and configure `yt-dlp`, `ffmpeg`, and presets into `C:\Tools`.
 
-### Option B: The Interactive Terminal Wizard
+### Option B: The One-Click Launcher (`Launch StreamVortex.bat`)
+Double-click `Launch StreamVortex.bat` in the project folder. This opens the interactive menu where you can simply pick an option using your arrow keys or numpad.
+
+### Option C: The Interactive Terminal Wizard
 In your terminal, simply run:
 ```bash
 streamvortex
 ```
 
-### Option C: The Modern Web Dashboard
+### Option D: The Modern Web Dashboard
 Launch the browser-based studio:
 ```bash
 streamvortex --web

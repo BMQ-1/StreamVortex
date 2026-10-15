@@ -61,12 +61,22 @@ def find_ytdlp() -> List[str]:
     if which_bin:
         return [which_bin]
 
-    # 2. Check C:\Tools\yt-dlp.exe (Global)
+    # 2. Check configured tools_dir
+    try:
+        saved_tools = get_config().get("tools_dir")
+        if saved_tools:
+            p = Path(saved_tools) / "yt-dlp.exe"
+            if p.exists():
+                return [str(p)]
+    except Exception:
+        pass
+
+    # 3. Check C:\Tools\yt-dlp.exe (Global)
     c_tools = Path("C:/Tools/yt-dlp.exe")
     if c_tools.exists():
         return [str(c_tools)]
 
-    # 3. Check standard global package locations
+    # 4. Check standard global package locations
     user_home = Path.home()
     candidates = [
         user_home / "AppData/Local/Microsoft/WinGet/Links/yt-dlp.exe",
@@ -78,7 +88,7 @@ def find_ytdlp() -> List[str]:
         if cand.exists():
             return [str(cand)]
 
-    # 4. Check global Python environment for yt_dlp module
+    # 5. Check global Python environment for yt_dlp module
     global_py = find_global_python()
     try:
         res = subprocess.run([global_py, "-m", "yt_dlp", "--version"], capture_output=True, text=True, timeout=2)
@@ -87,7 +97,7 @@ def find_ytdlp() -> List[str]:
     except Exception:
         pass
 
-    # 5. Fallback to local project bin/yt-dlp.exe only if no global tool exists
+    # 6. Fallback to local project bin/yt-dlp.exe only if no global tool exists
     if getattr(sys, "frozen", False):
         local_bin = Path(sys.executable).parent / "bin" / "yt-dlp.exe"
     else:
@@ -103,17 +113,28 @@ def find_ffmpeg() -> Optional[str]:
     Locates the global FFmpeg executable on the device.
     Prioritizes:
     1. System PATH (e.g. C:\\ffmpeg_folder\\... or C:\\Tools\\ffmpeg.exe)
-    2. C:\\ffmpeg_folder\\ffmpeg-essentials_build\\bin\\ffmpeg.exe
-    3. C:\\Tools\\ffmpeg.exe
-    4. Other standard global paths
-    5. Local fallback (only if no global FFmpeg is available)
+    2. Configured tools_dir from onboarding
+    3. C:\\ffmpeg_folder\\ffmpeg-essentials_build\\bin\\ffmpeg.exe
+    4. C:\\Tools\\ffmpeg.exe
+    5. Other standard global paths
+    6. Local fallback (only if no global FFmpeg is available)
     """
     # 1. Check system PATH (Global)
     which_bin = shutil.which("ffmpeg")
     if which_bin:
         return which_bin
 
-    # 2. Known global paths
+    # 2. Check configured tools_dir
+    try:
+        saved_tools = get_config().get("tools_dir")
+        if saved_tools:
+            p = Path(saved_tools) / "ffmpeg.exe"
+            if p.exists():
+                return str(p)
+    except Exception:
+        pass
+
+    # 3. Known global paths
     candidates = [
         Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffmpeg.exe"),
         Path("C:/ffmpeg_folder/bin/ffmpeg.exe"),
@@ -127,7 +148,7 @@ def find_ffmpeg() -> Optional[str]:
         if cand.exists():
             return str(cand)
 
-    # 3. Fallback: Local project bin/ffmpeg.exe (only if no global exists)
+    # 4. Fallback: Local project bin/ffmpeg.exe (only if no global exists)
     if getattr(sys, "frozen", False):
         local_bin = Path(sys.executable).parent / "bin" / "ffmpeg.exe"
     else:
@@ -154,7 +175,17 @@ def find_ffprobe() -> Optional[str]:
         if adjacent.exists():
             return str(adjacent)
 
-    # 3. Known global paths
+    # 3. Check configured tools_dir
+    try:
+        saved_tools = get_config().get("tools_dir")
+        if saved_tools:
+            p = Path(saved_tools) / "ffprobe.exe"
+            if p.exists():
+                return str(p)
+    except Exception:
+        pass
+
+    # 4. Known global paths
     candidates = [
         Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffprobe.exe"),
         Path("C:/ffmpeg_folder/bin/ffprobe.exe"),
@@ -166,7 +197,7 @@ def find_ffprobe() -> Optional[str]:
         if cand.exists():
             return str(cand)
 
-    # 4. Fallback: Local project bin/ffprobe.exe
+    # 5. Fallback: Local project bin/ffprobe.exe
     if getattr(sys, "frozen", False):
         local_bin = Path(sys.executable).parent / "bin" / "ffprobe.exe"
     else:
@@ -175,6 +206,52 @@ def find_ffprobe() -> Optional[str]:
         return str(local_bin)
 
     return None
+
+
+def find_player() -> Optional[str]:
+    """
+    Locates the best available media player on the device (MPV or VLC).
+    Checks system PATH, configured tools directory, and standard Windows install paths.
+    """
+    # 1. MPV on PATH
+    mpv = shutil.which("mpv")
+    if mpv:
+        return mpv
+
+    # 2. VLC on PATH
+    vlc = shutil.which("vlc")
+    if vlc:
+        return vlc
+
+    # 3. Check in configured tools_dir
+    try:
+        tools_dir = get_config().get("tools_dir")
+        if tools_dir:
+            for name in ["mpv.exe", "vlc.exe"]:
+                p = Path(tools_dir) / name
+                if p.exists():
+                    return str(p)
+    except Exception:
+        pass
+
+    # 4. Standard VLC install locations
+    for cand in [
+        Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "VideoLAN" / "VLC" / "vlc.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "VideoLAN" / "VLC" / "vlc.exe",
+        Path("C:/Program Files/VideoLAN/VLC/vlc.exe"),
+        Path("C:/Program Files (x86)/VideoLAN/VLC/vlc.exe"),
+    ]:
+        if cand.exists():
+            return str(cand)
+
+    return None
+
+
+def is_environment_ready() -> bool:
+    """Returns True if essential extraction tools (yt-dlp and FFmpeg) are ready."""
+    ytdlp = find_ytdlp()
+    ffmpeg = find_ffmpeg()
+    return bool(ytdlp and ffmpeg)
 
 
 def find_ytdlp_conf(is_tiktok_live: bool = False, custom_conf: Optional[str] = None) -> Optional[Path]:

@@ -35,7 +35,7 @@ echo ========================================================================
 echo.
 echo   [1] Launch Desktop GUI Studio (Recommended - Visual Window)
 echo   [2] Launch Web Studio in Browser (http://127.0.0.1:8765)
-echo   [3] Verify Global Environment (yt-dlp, FFmpeg, Playwright)
+echo   [3] 1-Click Zero-Setup Wizard (Install yt-dlp, FFmpeg, Python, VLC)
 echo   [4] Launch Interactive Control Center (Terminal Wizard)
 echo   [5] Run System Diagnostics (Doctor Health Check)
 echo   [6] Build Standalone StreamVortex.exe
@@ -91,7 +91,10 @@ goto MENU
 :SETUP
 cls
 echo.
-echo [StreamVortex Setup] Verifying global binaries and system environment...
+echo ========================================================================
+echo   StreamVortex Zero-Setup & Onboarding Wizard
+echo ========================================================================
+echo.
 if exist "StreamVortex.exe" (
     "StreamVortex.exe" --setup
 ) else (

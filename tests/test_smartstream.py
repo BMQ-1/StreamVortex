@@ -132,6 +132,36 @@ class TestStreamVortex(unittest.TestCase):
         if ffmpeg:
             self.assertTrue(bool(ffmpeg))
 
+    def test_check_environment_status(self):
+        from ytdlp_smartstream.onboarding import check_environment_status
+        status = check_environment_status()
+        self.assertIn("ytdlp", status)
+        self.assertIn("ffmpeg", status)
+        self.assertIn("python", status)
+        self.assertIn("player", status)
+        self.assertIn("is_ready", status)
+
+    def test_get_default_tools_dir(self):
+        from ytdlp_smartstream.onboarding import get_default_tools_dir
+        td = get_default_tools_dir()
+        self.assertTrue(td.exists())
+
+    def test_install_optimized_configs(self):
+        import tempfile
+        from pathlib import Path
+        from ytdlp_smartstream.onboarding import install_optimized_configs
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            ok, msg = install_optimized_configs(td_path)
+            self.assertTrue(ok)
+            self.assertTrue((td_path / "yt-dlp.conf").exists())
+            self.assertTrue((td_path / "tiktok-live.conf.txt").exists())
+            with open(td_path / "yt-dlp.conf", "r", encoding="utf-8") as f:
+                content = f.read()
+                self.assertIn("-o", content)
+                self.assertIn("av01", content)
+
 
 if __name__ == "__main__":
     unittest.main()

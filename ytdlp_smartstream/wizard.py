@@ -33,6 +33,14 @@ console = Console()
 
 def run_wizard():
     """Runs the main interactive wizard loop."""
+    from .engine import is_environment_ready
+    if not is_environment_ready():
+        console.print("\n[bold yellow][!] First-Time Setup Detected:[/bold yellow] [dim]Essential media engines (yt-dlp / FFmpeg) are not found.[/dim]")
+        do_setup = questionary.confirm("Would you like to run the automated 1-click setup wizard now?", default=True).ask()
+        if do_setup:
+            from .onboarding import run_cli_onboarding
+            run_cli_onboarding()
+
     while True:
         from .engine import find_ytdlp_conf
         active_conf = find_ytdlp_conf()
@@ -55,6 +63,7 @@ def run_wizard():
                 "🎵 Extract Audio Only MP3 (via yt-dlp)",
                 "📁 Open Downloads Folder",
                 "🩺 System Diagnostics & yt-dlp Health Check",
+                "🚀 Zero-Setup Onboarding (Install yt-dlp, FFmpeg, Python, VLC)",
                 "🚪 Exit"
             ],
             style=questionary.Style([
@@ -88,6 +97,12 @@ def run_wizard():
 
         if "System Diagnostics" in choice:
             run_doctor()
+            questionary.press_any_key_to_continue().ask()
+            continue
+
+        if "Zero-Setup Onboarding" in choice:
+            from .onboarding import run_cli_onboarding
+            run_cli_onboarding()
             questionary.press_any_key_to_continue().ask()
             continue
 

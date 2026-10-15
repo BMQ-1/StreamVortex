@@ -99,7 +99,8 @@ def main():
     parser.add_argument("--copy", "-c", action="store_true", help="Copy extracted stream URL directly to clipboard")
     parser.add_argument("--wait", "-w", action="store_true", help="Watchdog mode: wait until channel goes live, then alert/record")
     parser.add_argument("--gui", "-g", action="store_true", help="Launch modern dark-mode Desktop GUI window")
-    parser.add_argument("--setup", action="store_true", help="Download and verify official yt-dlp, FFmpeg, and Playwright binaries")
+    parser.add_argument("--setup", action="store_true", help="Verify and configure media tools (yt-dlp, FFmpeg, Playwright)")
+    parser.add_argument("--onboard", "--install-tools", action="store_true", help="Launch 1-click installer wizard for yt-dlp, FFmpeg, Python, VLC")
     parser.add_argument("--web", action="store_true", help="Launch the local Dark-Mode Web UI with embedded HLS player")
     parser.add_argument("--audio", "-a", action="store_true", help="Extract audio only (MP3) from stream or video")
     parser.add_argument("--doctor", action="store_true", help="Run system diagnostics and dependency check")
@@ -112,10 +113,14 @@ def main():
 
     args = parser.parse_args()
 
-    # Binary setup & dependency provisioner
-    if args.setup:
-        from .setup_binaries import setup_all_binaries
-        setup_all_binaries()
+    # Onboarding & Dependency Provisioner
+    if args.onboard or args.setup:
+        if args.gui or (not sys.stdin or not sys.stdin.isatty()):
+            from .onboarding import launch_onboarding_gui
+            launch_onboarding_gui()
+        else:
+            from .onboarding import run_cli_onboarding
+            run_cli_onboarding()
         return
 
     # Modern Desktop GUI window
@@ -365,11 +370,16 @@ def main():
 
 
 def _play(stream_url: str, user_agent: Optional[str] = None):
-    player = shutil.which("mpv") or shutil.which("vlc")
+    from .engine import find_player
+    player = find_player()
     if not player:
-        console.print("[yellow]Neither MPV nor VLC found on system PATH to play directly.[/yellow]")
-        console.print(f"URL: {stream_url}")
-        return
+        console.print("[yellow]Neither MPV nor VLC found on system. Launching Onboarding to install VLC...[/yellow]")
+        from .onboarding import run_cli_onboarding
+        run_cli_onboarding()
+        player = find_player()
+        if not player:
+            console.print(f"URL: {stream_url}")
+            return
 
     cmd = [player, stream_url]
     if user_agent and "mpv" in player.lower():

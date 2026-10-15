@@ -48,6 +48,7 @@ class StreamVortexApp:
         self.root.minsize(800, 600)
         self._build_ui()
         self._check_engine_status_async()
+        self.root.after(800, self._check_first_run_onboarding)
 
     def _build_ui(self):
         # Main padding container
@@ -123,10 +124,10 @@ class StreamVortexApp:
 
         self.setup_btn = tb.Button(
             status_grid,
-            text="⚡ Verify Global Environment",
+            text="⚡ Setup / Verify Media Tools",
             bootstyle="success",
-            command=self._run_binary_setup_thread
-        ) if HAS_TTKBOOTSTRAP else tk.Button(status_grid, text="⚡ Verify Global Environment", command=self._run_binary_setup_thread)
+            command=self._open_setup_wizard
+        ) if HAS_TTKBOOTSTRAP else tk.Button(status_grid, text="⚡ Setup / Verify Media Tools", command=self._open_setup_wizard)
         self.setup_btn.pack(side="right")
 
         self.progress_bar = tb.Progressbar(status_card, mode="determinate", bootstyle="info-striped") if HAS_TTKBOOTSTRAP else ttk.Progressbar(status_card, mode="determinate")
@@ -230,6 +231,16 @@ class StreamVortexApp:
             self.root.after(0, lambda: self.conf_status_lbl.config(text=conf_text, bootstyle="success" if conf else "secondary"))
 
         threading.Thread(target=_check, daemon=True).start()
+
+    def _check_first_run_onboarding(self):
+        from .engine import is_environment_ready
+        if not is_environment_ready():
+            self._log("[Welcome] Media engines not found. Launching Setup Wizard for 1-click installation...")
+            self._open_setup_wizard()
+
+    def _open_setup_wizard(self):
+        from .onboarding import launch_onboarding_gui
+        launch_onboarding_gui(parent=self.root, on_complete=self._check_engine_status_async)
 
     def _run_binary_setup_thread(self):
         self.setup_btn.config(state="disabled")
@@ -364,10 +375,12 @@ class StreamVortexApp:
             self._log("[Error] Please enter a URL.")
             return
 
-        player = shutil.which("mpv") or shutil.which("vlc")
+        from .engine import find_player
+        player = find_player()
         if not player:
-            self._log("[Notice] Neither MPV nor VLC found on system PATH. Copying URL instead...")
+            self._log("[Notice] No media player (VLC / MPV) found. Opening setup wizard to install VLC...")
             copy_to_clipboard(url)
+            self._open_setup_wizard()
             return
 
         self._log(f"[Player] Launching {Path(player).name} with {url}...")
