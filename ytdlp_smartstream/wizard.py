@@ -59,6 +59,7 @@ def run_wizard():
             choices=[
                 "⚡ Quick Stream Sniffer & Downloader (Paste any URL)",
                 "🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)",
+                "📑 Batch URL Sequential Downloader (Multiple links)",
                 "🌐 Open Web Studio (Recommended for beginners)",
                 "🎵 Extract Audio Only MP3 (via yt-dlp)",
                 "📁 Open Downloads Folder",
@@ -80,10 +81,15 @@ def run_wizard():
             console.print("\n[dim]Goodbye! Happy streaming.[/dim]\n")
             break
 
-        if "Web Dashboard" in choice:
+        if "Web Dashboard" in choice or "Web Studio" in choice:
             console.print("\n[bold cyan]Starting local Web Dashboard at http://127.0.0.1:8765 ...[/bold cyan]")
             launch_web_ui()
             break
+
+        if "Batch URL" in choice:
+            _handle_batch_download()
+            questionary.press_any_key_to_continue().ask()
+            continue
 
         if "Open Downloads Folder" in choice:
             d_dir = get_download_dir()
@@ -263,6 +269,52 @@ def _play_url(url: str, user_agent: str = None):
     if user_agent and "mpv" in player.lower():
         cmd.extend([f"--user-agent={user_agent}"])
     subprocess.run(cmd)
+
+
+def _handle_batch_download():
+    console.print("\n[bold cyan]📑 Batch URL Sequential Downloader[/bold cyan]")
+    path_str = questionary.text("Enter path to text file containing URLs (or leave blank to paste interactively):").ask()
+    if path_str and path_str.strip():
+        p = Path(path_str.strip())
+        if not p.exists():
+            console.print(f"[red][!] File not found: {p}[/red]")
+            return
+        urls = [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip() and line.strip().startswith("http")]
+    else:
+        raw = questionary.text("Enter URLs separated by spaces or commas:").ask()
+        if not raw:
+            return
+        urls = [u.strip() for u in raw.replace(",", " ").split() if u.strip().startswith("http")]
+
+    if not urls:
+        console.print("[yellow][!] No valid URLs provided.[/yellow]")
+        return
+
+    q = questionary.select("Select quality profile:", choices=[
+        "Maximum Quality (4K/2K/1080p)",
+        "Standard MP4 (1080p)",
+        "Fast MP4 (720p)",
+        "Studio Audio MP3"
+    ]).ask()
+    q_map = {"Maximum Quality (4K/2K/1080p)": "max", "Standard MP4 (1080p)": "1080p", "Fast MP4 (720p)": "720p", "Studio Audio MP3": "audio_mp3"}
+    q_code = q_map.get(q, "max")
+
+    from .engine import resolve_stream_metadata, run_ytdlp_download
+    console.print(f"\n[cyan]Starting download for {len(urls)} items...[/cyan]")
+    for idx, u in enumerate(urls, 1):
+        console.print(f"\n[bold yellow]--- [{idx}/{len(urls)}] {u} ---[/bold yellow]")
+        meta = resolve_stream_metadata(u)
+        run_ytdlp_download(
+            stream_url=u,
+            title=meta.get("title"),
+            uploader=meta.get("uploader"),
+            is_live=meta.get("is_live", False),
+            audio_only=q_code.startswith("audio_"),
+            quality_preference=q_code,
+            on_output=lambda line: console.print(f"[dim]{line}[/dim]"),
+            respect_conf_output=True
+        )
+    console.print("\n[bold green][+] All batch downloads complete![/bold green]\n")
 
 
 if __name__ == "__main__":

@@ -200,6 +200,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </button>
         </div>
 
+        <!-- Quick Platform Presets -->
+        <div class="flex items-center gap-2 flex-wrap pt-1 text-xs">
+          <span class="text-slate-400 mono">Presets:</span>
+          <button onclick="setQuickUrl('https://www.tiktok.com/@weathernewslive/live')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-pink-500/50 transition-all cursor-pointer">🎵 TikTok Live</button>
+          <button onclick="setQuickUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-red-500/50 transition-all cursor-pointer">▶️ YouTube</button>
+          <button onclick="setQuickUrl('https://www.twitch.tv/')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-purple-500/50 transition-all cursor-pointer">🟣 Twitch</button>
+          <button onclick="setQuickUrl('https://kick.com/')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-green-500/50 transition-all cursor-pointer">🟢 Kick</button>
+          <button onclick="setQuickUrl('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-cyan-500/50 transition-all cursor-pointer">⚡ Demo M3U8</button>
+        </div>
+
         <div id="loader" class="hidden py-4 text-center mono text-sm text-cyan-400 animate-pulse flex items-center justify-center gap-2">
           <svg class="animate-spin h-5 w-5 text-cyan-400" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
           <span>Interception wire active: resolving manifests & solving challenges...</span>
@@ -213,7 +223,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <!-- Stream Header -->
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/5">
             <div>
-              <div class="flex items-center gap-2.5 mb-1.5">
+              <div class="flex items-center gap-2.5 mb-1.5 flex-wrap">
+                <span id="platformBadge" class="text-xs px-2.5 py-0.5 rounded-full font-bold mono bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                  ⚡ Universal
+                </span>
                 <span id="liveStatusBadge" class="live-pulse bg-red-500/15 border border-red-500/30 text-red-400 text-xs px-2.5 py-0.5 rounded-full font-bold mono">
                   LIVE STREAM
                 </span>
@@ -376,6 +389,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('uploaderBadge').innerText = data.uploader ? '@' + data.uploader : '';
         document.getElementById('liveStatusBadge').innerText = data.is_live ? 'LIVE STREAM' : 'VOD VIDEO';
 
+        if (data.platform) {
+          const pb = document.getElementById('platformBadge');
+          pb.innerText = `${data.platform.icon} ${data.platform.name}`;
+          if (data.platform.badge_color) {
+            pb.style.borderColor = data.platform.badge_color + '55';
+            pb.style.color = data.platform.badge_color;
+          }
+        }
+
         renderFormats(data.formats || []);
 
         const hlsFmt = data.formats.find(f => f.protocol === 'm3u8_native' || f.url.includes('.m3u8')) || data.formats[0];
@@ -388,6 +410,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         loader.classList.add('hidden');
         alert('Server connection failed: ' + e);
       }
+    }
+
+    function setQuickUrl(url) {
+      document.getElementById('streamUrlInput').value = url;
+      document.getElementById('streamUrlInput').focus();
     }
 
     function renderFormats(formats) {

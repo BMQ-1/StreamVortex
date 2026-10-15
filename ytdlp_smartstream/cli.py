@@ -110,8 +110,34 @@ def main():
     parser.add_argument("--conf", "-C", default=None, help="Path to custom yt-dlp.conf configuration file")
     parser.add_argument("--timeout", "-t", type=int, default=15, help="Timeout in seconds for stream discovery")
     parser.add_argument("--output", "-o", default=None, help="Output filename for recordings")
+    parser.add_argument("--batch", "-b", default=None, help="Path to text file containing URLs to download sequentially")
+    parser.add_argument("--quality", "-q", default="max", choices=["max", "1080p", "720p", "480p", "audio_mp3", "audio_m4a"], help="Quality profile (default: max)")
 
     args = parser.parse_args()
+
+    # Batch file downloader
+    if args.batch:
+        batch_path = Path(args.batch)
+        if not batch_path.exists():
+            console.print(f"[bold red][!] Batch file not found: {batch_path}[/bold red]")
+            return
+        urls = [line.strip() for line in batch_path.read_text(encoding="utf-8").splitlines() if line.strip() and line.strip().startswith("http")]
+        console.print(f"[bold cyan][StreamVortex Batch] Queuing {len(urls)} URLs...[/bold cyan]")
+        for idx, u in enumerate(urls, 1):
+            console.print(f"\n[bold yellow][{idx}/{len(urls)}] Processing: {u}[/bold yellow]")
+            meta = resolve_stream_metadata(u)
+            run_ytdlp_download(
+                stream_url=u,
+                title=meta.get("title"),
+                uploader=meta.get("uploader"),
+                is_live=meta.get("is_live", False),
+                audio_only=args.audio or args.quality.startswith("audio_"),
+                quality_preference=args.quality,
+                on_output=lambda line: console.print(f"[dim]{line}[/dim]"),
+                respect_conf_output=True
+            )
+        console.print("\n[bold green][+] All batch downloads completed![/bold green]")
+        return
 
     # Onboarding & Dependency Provisioner
     if args.onboard or args.setup:

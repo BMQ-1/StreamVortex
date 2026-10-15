@@ -27,9 +27,10 @@ except ImportError:
 from .setup_binaries import setup_all_binaries, get_bin_dir
 from .engine import (
     find_ytdlp, find_ffmpeg, run_ytdlp_download, run_ffmpeg_record,
-    resolve_stream_metadata, find_ytdlp_conf, find_player, is_environment_ready
+    resolve_stream_metadata, find_ytdlp_conf, find_player, is_environment_ready,
+    detect_platform, clean_target_url, check_free_disk_space
 )
-from .config import get_download_dir, add_history_entry
+from .config import get_download_dir, add_history_entry, get_history
 from .onboarding import get_default_tools_dir, launch_onboarding_gui
 from .sniffer import smart_sniff
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
@@ -119,6 +120,14 @@ class StreamVortexApp:
         ) if HAS_TTKBOOTSTRAP else tk.Button(links_frame, text="🛠️ Tools Folder", command=self._open_tools_folder)
         tools_btn.pack(side="left", padx=3)
 
+        history_btn = tb.Button(
+            links_frame,
+            text="📜 History",
+            bootstyle="outline-secondary",
+            command=self._open_history_dialog
+        ) if HAS_TTKBOOTSTRAP else tk.Button(links_frame, text="📜 History", command=self._open_history_dialog)
+        history_btn.pack(side="left", padx=3)
+
         folder_btn = tb.Button(
             links_frame,
             text="📁 Downloads",
@@ -135,16 +144,19 @@ class StreamVortexApp:
         status_grid.pack(fill="x")
 
         self.ytdlp_status_lbl = tb.Label(status_grid, text="yt-dlp: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="yt-dlp: Checking...", fg="#94a3b8", bg="#1e293b")
-        self.ytdlp_status_lbl.pack(side="left", padx=(0, 12))
+        self.ytdlp_status_lbl.pack(side="left", padx=(0, 10))
 
         self.ffmpeg_status_lbl = tb.Label(status_grid, text="FFmpeg: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="FFmpeg: Checking...", fg="#94a3b8", bg="#1e293b")
-        self.ffmpeg_status_lbl.pack(side="left", padx=12)
+        self.ffmpeg_status_lbl.pack(side="left", padx=10)
 
         self.driver_status_lbl = tb.Label(status_grid, text="Playwright: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="Playwright: Checking...", fg="#94a3b8", bg="#1e293b")
-        self.driver_status_lbl.pack(side="left", padx=12)
+        self.driver_status_lbl.pack(side="left", padx=10)
 
         self.conf_status_lbl = tb.Label(status_grid, text="Config: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="Config: Checking...", fg="#94a3b8", bg="#1e293b")
-        self.conf_status_lbl.pack(side="left", padx=12)
+        self.conf_status_lbl.pack(side="left", padx=10)
+
+        self.disk_space_lbl = tb.Label(status_grid, text="Storage: Checking...", font=("Segoe UI", 9), bootstyle="secondary") if HAS_TTKBOOTSTRAP else tk.Label(status_grid, text="Storage: Checking...", fg="#94a3b8", bg="#1e293b")
+        self.disk_space_lbl.pack(side="left", padx=10)
 
         self.setup_btn = tb.Button(
             status_grid,
@@ -160,10 +172,11 @@ class StreamVortexApp:
 
         # URL Input Row
         url_frame = tb.Frame(action_card) if HAS_TTKBOOTSTRAP else tk.Frame(action_card, bg="#1e293b")
-        url_frame.pack(fill="x", pady=(0, 10))
+        url_frame.pack(fill="x", pady=(0, 8))
 
         tb.Label(url_frame, text="Target URL:", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
         self.url_var = tb.StringVar() if HAS_TTKBOOTSTRAP else tk.StringVar()
+        self.url_var.trace_add("write", lambda *args: self._on_url_change())
         self.url_entry = tb.Entry(url_frame, textvariable=self.url_var, font=("Consolas", 10)) if HAS_TTKBOOTSTRAP else tk.Entry(url_frame, textvariable=self.url_var, font=("Consolas", 10))
         self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
@@ -172,6 +185,29 @@ class StreamVortexApp:
 
         batch_btn = tb.Button(url_frame, text="📑 Batch URLs", bootstyle="info", command=self._open_batch_dialog) if HAS_TTKBOOTSTRAP else tk.Button(url_frame, text="📑 Batch", command=self._open_batch_dialog)
         batch_btn.pack(side="left")
+
+        # Platform Detection & Quick Platform Presets Row
+        platform_row = tb.Frame(action_card) if HAS_TTKBOOTSTRAP else tk.Frame(action_card, bg="#1e293b")
+        platform_row.pack(fill="x", pady=(0, 10))
+
+        self.platform_badge_lbl = tb.Label(
+            platform_row,
+            text="🌐 Universal Mode",
+            font=("Segoe UI", 8, "bold"),
+            bootstyle="secondary-inverse"
+        ) if HAS_TTKBOOTSTRAP else tk.Label(platform_row, text="🌐 Universal Mode", font=("Segoe UI", 8, "bold"), fg="#94a3b8", bg="#0f172a")
+        self.platform_badge_lbl.pack(side="left", padx=(0, 10))
+
+        tb.Label(platform_row, text="Presets:", font=("Segoe UI", 8), bootstyle="secondary").pack(side="left", padx=(0, 4))
+
+        for name, example in [("TikTok Live", "https://www.tiktok.com/@weathernewslive/live"), ("YouTube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"), ("Twitch", "https://www.twitch.tv/"), ("Kick", "https://kick.com/")]:
+            btn = tb.Button(
+                platform_row,
+                text=name,
+                bootstyle="link",
+                command=lambda ex=example: self.url_var.set(ex)
+            ) if HAS_TTKBOOTSTRAP else tk.Button(platform_row, text=name, command=lambda ex=example: self.url_var.set(ex))
+            btn.pack(side="left", padx=2)
 
         # Format & Smart Features Control Row
         opt_frame = tb.Frame(action_card) if HAS_TTKBOOTSTRAP else tk.Frame(action_card, bg="#1e293b")
@@ -339,14 +375,66 @@ class StreamVortexApp:
 
             # Check yt-dlp config
             conf = find_ytdlp_conf()
-            conf_text = f"Config: {conf.name}" if conf else "Config: Default"
+            # Check disk space
+            has_space, free_gb = check_free_disk_space()
+            disk_text = f"Disk: {free_gb:.1f} GB Free"
 
             self.root.after(0, lambda: self.ytdlp_status_lbl.config(text=ytdlp_text, bootstyle="success" if ytdlp else "danger"))
             self.root.after(0, lambda: self.ffmpeg_status_lbl.config(text=ffmpeg_text, bootstyle="success" if ffmpeg else "warning"))
             self.root.after(0, lambda: self.driver_status_lbl.config(text=pw_text, bootstyle="success" if "Ready" in pw_text else "secondary"))
             self.root.after(0, lambda: self.conf_status_lbl.config(text=conf_text, bootstyle="success" if conf else "secondary"))
+            self.root.after(0, lambda: self.disk_space_lbl.config(text=disk_text, bootstyle="secondary" if has_space else "danger"))
 
         threading.Thread(target=_check, daemon=True).start()
+
+    def _on_url_change(self):
+        val = self.url_var.get().strip()
+        if val:
+            p = detect_platform(val)
+            self.platform_badge_lbl.config(
+                text=f"{p['icon']} {p['name']}",
+                bootstyle="info-inverse" if p['id'] != 'generic' else 'secondary-inverse'
+            )
+        else:
+            self.platform_badge_lbl.config(text="🌐 Universal Mode", bootstyle="secondary-inverse")
+
+    def _open_history_dialog(self):
+        win = tb.Toplevel(self.root) if HAS_TTKBOOTSTRAP else tk.Toplevel(self.root)
+        win.title("Downloads & Recording History")
+        win.geometry("750x480")
+        if not HAS_TTKBOOTSTRAP:
+            win.configure(bg="#1e293b")
+
+        tb.Label(
+            win,
+            text="📜 Downloads History",
+            font=("Segoe UI", 14, "bold"),
+            bootstyle="info"
+        ).pack(anchor="w", padx=18, pady=(16, 6))
+
+        content_frame = tb.Frame(win, padding=18) if HAS_TTKBOOTSTRAP else tk.Frame(win, padx=18, pady=18, bg="#1e293b")
+        content_frame.pack(fill="both", expand=True)
+
+        history = get_history()
+        if not history:
+            tb.Label(content_frame, text="No downloads recorded yet.", font=("Segoe UI", 10), bootstyle="secondary").pack(pady=40)
+        else:
+            tree = ttk.Treeview(content_frame, columns=("Title", "Date", "Type"), show="headings", height=12)
+            tree.heading("Title", text="Title")
+            tree.heading("Date", text="Date")
+            tree.heading("Type", text="Type")
+            tree.column("Title", width=420)
+            tree.column("Date", width=160)
+            tree.column("Type", width=80)
+            tree.pack(fill="both", expand=True)
+
+            for item in reversed(history[-50:]):
+                tree.insert("", "end", values=(item.get("title", "Media"), item.get("date_str", "--"), item.get("type", "video").upper()))
+
+        btn_row = tb.Frame(win, padding=18) if HAS_TTKBOOTSTRAP else tk.Frame(win, padx=18, pady=18, bg="#1e293b")
+        btn_row.pack(fill="x")
+        tb.Button(btn_row, text="📂 Open Downloads Folder", bootstyle="info", command=self._open_downloads_folder).pack(side="left")
+        tb.Button(btn_row, text="Close", bootstyle="secondary", command=win.destroy).pack(side="right")
 
     def _check_first_run_onboarding(self):
         if not is_environment_ready():

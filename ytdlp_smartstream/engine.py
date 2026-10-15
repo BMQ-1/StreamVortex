@@ -13,8 +13,9 @@ import json
 import shutil
 import subprocess
 import threading
+import urllib.parse
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Tuple
 
 from .config import get_download_dir, get_config, add_history_entry
 
@@ -398,12 +399,138 @@ def sanitize_title_for_filename(
     return f"{base}.{ext}"
 
 
+def clean_target_url(url: str) -> str:
+    """Cleans and sanitizes a stream URL, stripping tracking tokens and formatting artifacts."""
+    if not url:
+        return ""
+    url = url.strip().strip("'\"<>")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.query:
+            qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            filtered_qs = {k: v for k, v in qs.items() if not k.lower().startswith("utm_") and k.lower() not in ("si", "fbclid", "igsh", "ref_src")}
+            new_query = urllib.parse.urlencode(filtered_qs, doseq=True) if filtered_qs else ""
+            url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+    except Exception:
+        pass
+    return url
+
+
+def detect_platform(url: str) -> Dict[str, str]:
+    """Identifies the target streaming platform with styling cues and metadata."""
+    u = url.lower()
+    if "tiktok.com" in u:
+        is_live = "/live" in u
+        return {
+            "id": "tiktok",
+            "name": "TikTok Live" if is_live else "TikTok Video",
+            "badge_color": "#ff2a5f",
+            "icon": "🎵",
+            "type": "live" if is_live else "vod"
+        }
+    elif "youtube.com" in u or "youtu.be" in u:
+        is_live = "/live" in u or "live" in u
+        is_short = "/shorts/" in u
+        name = "YouTube Shorts" if is_short else ("YouTube Live" if is_live else "YouTube")
+        return {
+            "id": "youtube",
+            "name": name,
+            "badge_color": "#ff0000",
+            "icon": "▶️",
+            "type": "live" if is_live else "vod"
+        }
+    elif "twitch.tv" in u:
+        is_clip = "/clip" in u or "clips.twitch.tv" in u
+        return {
+            "id": "twitch",
+            "name": "Twitch Clip" if is_clip else "Twitch Stream",
+            "badge_color": "#a970ff",
+            "icon": "🟣",
+            "type": "vod" if is_clip else "live"
+        }
+    elif "kick.com" in u:
+        return {
+            "id": "kick",
+            "name": "Kick Stream",
+            "badge_color": "#53fc18",
+            "icon": "🟢",
+            "type": "live"
+        }
+    elif "twitter.com" in u or "x.com" in u:
+        return {
+            "id": "twitter",
+            "name": "X / Twitter",
+            "badge_color": "#1d9bf0",
+            "icon": "🐦",
+            "type": "vod"
+        }
+    elif "instagram.com" in u:
+        return {
+            "id": "instagram",
+            "name": "Instagram",
+            "badge_color": "#e1306c",
+            "icon": "📷",
+            "type": "vod"
+        }
+    elif "facebook.com" in u or "fb.watch" in u:
+        return {
+            "id": "facebook",
+            "name": "Facebook Video",
+            "badge_color": "#1877f2",
+            "icon": "📘",
+            "type": "vod"
+        }
+    elif "reddit.com" in u or "v.redd.it" in u:
+        return {
+            "id": "reddit",
+            "name": "Reddit Video",
+            "badge_color": "#ff4500",
+            "icon": "🤖",
+            "type": "vod"
+        }
+    elif ".m3u8" in u:
+        return {
+            "id": "hls",
+            "name": "HLS Stream (m3u8)",
+            "badge_color": "#00f2fe",
+            "icon": "⚡",
+            "type": "live"
+        }
+    elif ".mpd" in u:
+        return {
+            "id": "dash",
+            "name": "DASH Stream (mpd)",
+            "badge_color": "#38bdf8",
+            "icon": "⚡",
+            "type": "live"
+        }
+    return {
+        "id": "generic",
+        "name": "Universal Web Stream",
+        "badge_color": "#64748b",
+        "icon": "🌐",
+        "type": "unknown"
+    }
+
+
+def check_free_disk_space(target_dir: Optional[Path] = None, min_gb: float = 0.5) -> Tuple[bool, float]:
+    """Checks whether the target drive has sufficient free disk space."""
+    d = target_dir or get_download_dir()
+    try:
+        total, used, free = shutil.disk_usage(d)
+        free_gb = free / (1024 ** 3)
+        return free_gb >= min_gb, round(free_gb, 2)
+    except Exception:
+        return True, 999.0
+
+
 def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
     """
     Universal metadata resolver for any stream or video in the world.
-    Extracts actual title, creator, thumbnail, and stream properties.
+    Extracts actual title, creator, thumbnail, platform, and stream properties.
     """
-    url = url.strip()
+    url = clean_target_url(url)
+    platform_info = detect_platform(url)
 
     # 1. TikTok Live
     if "tiktok.com" in url and "/live" in url:
@@ -418,6 +545,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                     "uploader": res.uploader,
                     "is_live": True,
                     "id": res.media_id,
+                    "platform": platform_info,
                     "formats": [
                         {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext, "width": f.width, "height": f.height}
                         for f in res.formats
@@ -438,6 +566,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                     "uploader": res.uploader,
                     "is_live": False,
                     "id": res.media_id,
+                    "platform": platform_info,
                     "formats": [
                         {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext}
                         for f in res.formats
@@ -478,6 +607,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                 "uploader": uploader,
                 "is_live": is_live,
                 "id": data.get("id"),
+                "platform": platform_info,
                 "thumbnail": data.get("thumbnail"),
                 "duration": data.get("duration"),
                 "formats": extracted_fmts[-10:] if extracted_fmts else [],
@@ -497,6 +627,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                 "uploader": "",
                 "is_live": sniffed.stream_type in ("hls", "flv"),
                 "id": url,
+                "platform": platform_info,
                 "formats": [{"id": f"{sniffed.stream_type}-main", "url": sniffed.url, "protocol": "m3u8_native" if sniffed.stream_type == "hls" else "https"}],
                 "suggested_filename": sanitize_title_for_filename(title, ext="mp4")
             }
@@ -508,6 +639,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
         "uploader": "",
         "is_live": False,
         "id": "unknown",
+        "platform": platform_info,
         "suggested_filename": "stream_media.mp4"
     }
 
@@ -597,6 +729,14 @@ def run_ytdlp_download(
     """
     ytdlp_cmd = find_ytdlp()
     d_dir = get_download_dir()
+    stream_url = clean_target_url(stream_url)
+
+    # Disk space pre-check
+    has_space, free_gb = check_free_disk_space(d_dir, min_gb=0.5)
+    if not has_space:
+        low_msg = f"[Storage Alert] Low disk space detected ({free_gb:.1f} GB free). Continuing with download..."
+        if on_output:
+            on_output(low_msg)
 
     cmd = list(ytdlp_cmd)
 
@@ -669,7 +809,14 @@ def run_ytdlp_download(
     if referer:
         cmd.extend(["--referer", referer])
 
-    cmd.extend(["--no-mtime", "--progress"])
+    cmd.extend([
+        "--retries", "10",
+        "--fragment-retries", "15",
+        "--file-access-retries", "5",
+        "--retry-sleep", "2",
+        "--no-mtime",
+        "--progress"
+    ])
 
     # 6. Run process with live output streaming & progress parsing
     if on_output or progress_callback:

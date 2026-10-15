@@ -189,6 +189,38 @@ class TestStreamVortex(unittest.TestCase):
         self.assertEqual(m.group(3), "14.20MiB/s")
         self.assertEqual(m.group(4), "00:04")
 
+    def test_detect_platform(self):
+        from ytdlp_smartstream.engine import detect_platform
+        p_tt = detect_platform("https://www.tiktok.com/@creator/live")
+        self.assertEqual(p_tt["id"], "tiktok")
+        self.assertEqual(p_tt["name"], "TikTok Live")
+
+        p_yt = detect_platform("https://www.youtube.com/watch?v=12345")
+        self.assertEqual(p_yt["id"], "youtube")
+
+        p_tw = detect_platform("https://www.twitch.tv/ninja")
+        self.assertEqual(p_tw["id"], "twitch")
+
+        p_kick = detect_platform("https://kick.com/streamer")
+        self.assertEqual(p_kick["id"], "kick")
+
+        p_hls = detect_platform("https://example.com/playlist.m3u8")
+        self.assertEqual(p_hls["id"], "hls")
+
+    def test_clean_target_url(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        raw = " https://www.youtube.com/watch?v=12345&utm_source=share&si=abc123 "
+        cleaned = clean_target_url(raw)
+        self.assertIn("v=12345", cleaned)
+        self.assertNotIn("utm_source", cleaned)
+        self.assertNotIn("si=", cleaned)
+
+    def test_check_free_disk_space(self):
+        from ytdlp_smartstream.engine import check_free_disk_space
+        has_space, free_gb = check_free_disk_space()
+        self.assertIsInstance(has_space, bool)
+        self.assertGreater(free_gb, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
