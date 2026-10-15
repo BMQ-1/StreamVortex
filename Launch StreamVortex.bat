@@ -13,8 +13,23 @@ if %errorlevel% neq 0 (
     )
     cls
     echo ========================================================================
-    echo   [ERROR] Python is not installed or not found on PATH!
+    echo   StreamVortex - First Time Setup Required
     echo ========================================================================
+    echo.
+    echo   Python was not detected on your device.
+    echo.
+    set /p INSTALL_PY="  Would you like StreamVortex to auto-install Python 3.11 now? (Y/N): "
+    if /i "%INSTALL_PY%"=="Y" (
+        echo.
+        echo   [1/2] Downloading official Python 3.11 Windows installer...
+        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\python_installer.exe'"
+        echo   [2/2] Launching Python setup (adding to PATH)...
+        "%TEMP%\python_installer.exe" /passive InstallAllUsers=0 Include_launcher=1 PrependPath=1
+        echo.
+        echo   [+] Python installed! Please restart this launcher.
+        pause
+        exit /b 0
+    )
     echo.
     echo Please install Python 3.9+ from https://www.python.org/
     echo Make sure to check the box 'Add Python to PATH' during installation.

@@ -162,6 +162,33 @@ class TestStreamVortex(unittest.TestCase):
                 self.assertIn("-o", content)
                 self.assertIn("av01", content)
 
+    def test_download_manager(self):
+        from ytdlp_smartstream.engine import DownloadManager
+        dm = DownloadManager()
+        job = dm.start_job("job-1", "Test Stream", "https://example.com/test.m3u8")
+        self.assertEqual(job["status"], "starting")
+        self.assertEqual(job["title"], "Test Stream")
+
+        dm.update_job("job-1", progress=50.0, speed="10MiB/s", eta="00:02")
+        jobs = dm.get_active_jobs()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["progress"], 50.0)
+        self.assertEqual(jobs[0]["speed"], "10MiB/s")
+
+        dm.finish_job("job-1", success=True)
+        jobs = dm.get_active_jobs()
+        self.assertTrue(jobs[0]["completed"])
+        self.assertEqual(jobs[0]["status"], "completed")
+
+    def test_progress_regex(self):
+        from ytdlp_smartstream.engine import PROGRESS_REGEX
+        line = "[download]  65.4% of  150.25MiB at  14.20MiB/s ETA 00:04"
+        m = PROGRESS_REGEX.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual(float(m.group(1)), 65.4)
+        self.assertEqual(m.group(3), "14.20MiB/s")
+        self.assertEqual(m.group(4), "00:04")
+
 
 if __name__ == "__main__":
     unittest.main()

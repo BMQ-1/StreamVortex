@@ -12,6 +12,7 @@ import re
 import json
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
@@ -458,8 +459,20 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
         if res.returncode == 0 and res.stdout.strip():
             data = json.loads(res.stdout.splitlines()[0])
             title = data.get("title") or "video"
-            uploader = data.get("uploader") or data.get("channel") or ""
+            uploader = data.get("uploader") or data.get("channel") or data.get("creator") or ""
             is_live = bool(data.get("is_live"))
+            raw_fmts = data.get("formats", [])
+            extracted_fmts = []
+            for f in raw_fmts:
+                if f.get("url"):
+                    extracted_fmts.append({
+                        "id": f.get("format_id", "fmt"),
+                        "url": f.get("url"),
+                        "protocol": f.get("protocol", "https"),
+                        "ext": f.get("ext", "mp4"),
+                        "height": f.get("height"),
+                        "format_note": f.get("format_note", "")
+                    })
             return {
                 "title": title,
                 "uploader": uploader,
@@ -467,6 +480,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                 "id": data.get("id"),
                 "thumbnail": data.get("thumbnail"),
                 "duration": data.get("duration"),
+                "formats": extracted_fmts[-10:] if extracted_fmts else [],
                 "suggested_filename": sanitize_title_for_filename(title, uploader=uploader, ext="mp4")
             }
     except Exception:
@@ -498,6 +512,64 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
     }
 
 
+PROGRESS_REGEX = re.compile(r'\[download\]\s+([\d\.]+)%\s+of\s+~?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)')
+PROGRESS_SIMPLE_REGEX = re.compile(r'\[download\]\s+([\d\.]+)%')
+
+
+class DownloadManager:
+    """Thread-safe active download tracker for Desktop GUI and Web Studio."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+
+    def start_job(self, job_id: str, title: str, url: str) -> Dict[str, Any]:
+        with self._lock:
+            job = {
+                "id": job_id,
+                "title": title or "Media Download",
+                "url": url,
+                "status": "starting",
+                "progress": 0.0,
+                "speed": "--",
+                "eta": "--",
+                "completed": False,
+                "error": None
+            }
+            self._jobs[job_id] = job
+            return job
+
+    def update_job(self, job_id: str, progress: float, speed: str = "--", eta: str = "--", status: str = "downloading"):
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id].update({
+                    "progress": progress,
+                    "speed": speed,
+                    "eta": eta,
+                    "status": status
+                })
+
+    def finish_job(self, job_id: str, success: bool = True, error: Optional[str] = None):
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id].update({
+                    "completed": True,
+                    "status": "completed" if success else "failed",
+                    "progress": 100.0 if success else self._jobs[job_id]["progress"],
+                    "error": error
+                })
+
+    def get_active_jobs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._jobs.values())
+
+    def clear_completed(self):
+        with self._lock:
+            self._jobs = {k: v for k, v in self._jobs.items() if not v["completed"]}
+
+
+DOWNLOAD_MANAGER = DownloadManager()
+
+
 def run_ytdlp_download(
     stream_url: str,
     output_filename: Optional[str] = None,
@@ -506,17 +578,19 @@ def run_ytdlp_download(
     is_live: bool = False,
     quality_preference: Optional[str] = None,
     on_output: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[float, str, str], None]] = None,
     conf_path: Optional[str] = None,
     title: Optional[str] = None,
     uploader: Optional[str] = None,
     respect_conf_output: bool = True
 ) -> int:
     """
-    Executes a yt-dlp download with intelligent configuration management & title resolution:
+    Executes a yt-dlp download with intelligent configuration management, progress streaming, & title resolution:
     - Automatically discovers and injects the user's .conf file (e.g. C:\\Tools\\yt-dlp.conf).
     - If is_live=True: overrides incompatible external downloaders (like aria2c)
       by using native HLS/m3u8 streaming, ensuring lives download smoothly.
-    - If audio_only=True: extracts audio and transcodes to high-quality MP3.
+    - If audio_only=True: extracts audio and transcodes to high-quality MP3/M4A.
+    - Parses live percentage, speed, and ETA for real-time progress callbacks.
     - Always names the resulting file using the actual title of the video or live.
     - If the user's .conf defines an output template (-o) and output_filename is None,
       respects and uses the user's configured output template!
@@ -544,6 +618,8 @@ def run_ytdlp_download(
     has_conf_output = conf_has_output_template(conf) if conf else False
     out_path_label = ""
 
+    ext_target = "m4a" if quality_preference == "audio_m4a" else ("mp3" if audio_only else "mp4")
+
     if output_filename:
         out_path = Path(output_filename)
         if not out_path.is_absolute():
@@ -551,45 +627,43 @@ def run_ytdlp_download(
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
     elif title:
-        # Caller provided actual title: format safe name
-        safe_name = sanitize_title_for_filename(title, uploader=uploader, ext="mp3" if audio_only else "mp4")
+        safe_name = sanitize_title_for_filename(title, uploader=uploader, ext=ext_target)
         out_path = d_dir / safe_name
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
     elif has_conf_output and respect_conf_output:
-        # Config file defines its own output template (e.g. C:\Tools\Videos\%(title)s.%(ext)s)
-        # Do not override -o on CLI; yt-dlp will naturally apply the .conf template!
         out_path_label = "Configured in yt-dlp.conf"
     else:
-        # Default to actual title template in download directory
-        ext = "mp3" if audio_only else "%(ext)s"
-        out_path = d_dir / f"%(title).90B [%(id)s].{ext}"
+        out_ext = ext_target if (audio_only or quality_preference == "audio_m4a") else "%(ext)s"
+        out_path = d_dir / f"%(title).90B [%(id)s].{out_ext}"
         cmd.extend(["-o", str(out_path)])
         out_path_label = str(out_path)
 
     # 3. Handle Audio Extraction
-    if audio_only:
+    if audio_only or quality_preference in ("audio_mp3", "audio_m4a"):
+        fmt = "m4a" if quality_preference == "audio_m4a" else "mp3"
         cmd.extend([
             "-x",
-            "--audio-format", "mp3",
+            "--audio-format", fmt,
             "--audio-quality", "0",
         ])
 
-    # 4. Handle Live Streams: Override aria2c conflicts from yt-dlp.conf
+    # 4. Handle Live Streams & Quality Profiles
     if is_live:
-        # Use native m3u8 downloader and fallback format so live streams don't crash
         cmd.extend([
             "--downloader", "m3u8:native",
             "--no-part",
             "-f", "best/b",
         ])
-    elif quality_preference and quality_preference != "best":
-        if "720" in quality_preference:
-            cmd.extend(["-f", "best[height<=720]/best"])
+    elif quality_preference and quality_preference not in ("best", "audio_mp3", "audio_m4a"):
+        if quality_preference in ("max", "4k_2k"):
+            cmd.extend(["-f", "(bestvideo[height>=1440]+bestaudio/bestvideo+bestaudio/best)"])
         elif "1080" in quality_preference:
-            cmd.extend(["-f", "best[height<=1080]/best"])
+            cmd.extend(["-f", "(bestvideo[height<=1080]+bestaudio/best[height<=1080]/best)"])
+        elif "720" in quality_preference:
+            cmd.extend(["-f", "(bestvideo[height<=720]+bestaudio/best[height<=720]/best)"])
         elif "480" in quality_preference:
-            cmd.extend(["-f", "best[height<=480]/best"])
+            cmd.extend(["-f", "(bestvideo[height<=480]+bestaudio/best[height<=480]/best)"])
 
     # 5. Headers & Flags
     if referer:
@@ -597,8 +671,8 @@ def run_ytdlp_download(
 
     cmd.extend(["--no-mtime", "--progress"])
 
-    # 6. Run process with live output streaming
-    if on_output:
+    # 6. Run process with live output streaming & progress parsing
+    if on_output or progress_callback:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -608,7 +682,27 @@ def run_ytdlp_download(
             errors="replace"
         )
         for line in proc.stdout:
-            on_output(line.strip())
+            clean_line = line.strip()
+            if on_output:
+                on_output(clean_line)
+            if progress_callback and clean_line:
+                m = PROGRESS_REGEX.search(clean_line)
+                if m:
+                    try:
+                        pct = float(m.group(1))
+                        speed = m.group(3)
+                        eta = m.group(4)
+                        progress_callback(pct, speed, eta)
+                    except Exception:
+                        pass
+                else:
+                    m_simple = PROGRESS_SIMPLE_REGEX.search(clean_line)
+                    if m_simple:
+                        try:
+                            pct = float(m_simple.group(1))
+                            progress_callback(pct, "--", "--")
+                        except Exception:
+                            pass
         proc.wait()
         retcode = proc.returncode
     else:
@@ -620,7 +714,7 @@ def run_ytdlp_download(
             title=entry_title,
             filename=out_path_label,
             stream_url=stream_url,
-            media_type="audio" if audio_only else ("live" if is_live else "video")
+            media_type="audio" if (audio_only or quality_preference in ("audio_mp3", "audio_m4a")) else ("live" if is_live else "video")
         )
 
     return retcode

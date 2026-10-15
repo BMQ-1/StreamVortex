@@ -12,6 +12,7 @@ Features:
 import json
 import os
 import sys
+import time
 import shutil
 import subprocess
 import threading
@@ -23,7 +24,7 @@ from typing import Dict, Any
 
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
 from .sniffer import smart_sniff
-from .engine import find_ytdlp_conf, resolve_stream_metadata, run_ytdlp_download
+from .engine import find_ytdlp_conf, resolve_stream_metadata, run_ytdlp_download, DOWNLOAD_MANAGER
 from .config import (
     get_config, save_config, get_download_dir,
     get_history, add_history_entry,
@@ -128,8 +129,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </button>
     </div>
 
-    <div class="flex items-center gap-3">
-      <button onclick="launchSetupWizard()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-cyan-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1.5 transition-all cursor-pointer">
+    <div class="flex items-center gap-2">
+      <button onclick="openBatchModal()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-cyan-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1.5 transition-all cursor-pointer">
+        📑 Batch URLs
+      </button>
+      <button onclick="launchSetupWizard()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-amber-300 hover:text-white hover:border-amber-400/50 flex items-center gap-1.5 transition-all cursor-pointer">
         ⚡ Setup Wizard
       </button>
       <button onclick="openFolder()" class="px-3 py-2 rounded-lg glass text-xs font-semibold text-slate-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1.5 transition-all">
@@ -155,6 +159,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </button>
     </div>
 
+    <!-- Active Downloads Live Monitoring Card -->
+    <div id="activeDownloadsContainer" class="hidden flex flex-col gap-3 glass rounded-2xl p-5 border border-cyan-500/30 shadow-2xl">
+      <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-cyan-400">
+        <span class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          Active Downloads Queue
+        </span>
+        <span id="activeCount" class="mono text-slate-400 text-[11px]">0 tasks</span>
+      </div>
+      <div id="activeJobsList" class="flex flex-col gap-2.5"></div>
+    </div>
+
     <!-- TAB 1: STUDIO -->
     <div id="tab-studio" class="tab-content flex flex-col gap-6">
       
@@ -162,17 +178,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="glass rounded-2xl p-6 shadow-2xl flex flex-col gap-4">
         <label class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
           <span>Target Stream or Video URL</span>
-          <span class="text-cyan-400 lowercase font-normal mono">tiktok live • tiktok vod • web m3u8</span>
+          <span class="text-cyan-400 lowercase font-normal mono">tiktok live • youtube • twitch • kick • m3u8</span>
         </label>
         <div class="flex flex-col sm:flex-row gap-3">
           <input 
             type="text" 
             id="streamUrlInput" 
-            placeholder="Paste URL (e.g. https://www.tiktok.com/@weathernewslive/live)..." 
+            placeholder="Paste URL (e.g. TikTok Live, YouTube, Twitch, Kick, or Web M3U8)..." 
             class="flex-1 glass-input rounded-xl px-4 py-3.5 text-sm mono text-white outline-none"
             onkeydown="if(event.key === 'Enter') resolveStream()"
           />
-          <button onclick="resolveStream()" id="resolveBtn" class="btn-gradient px-7 py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
+          <select id="qualitySelect" class="glass-input rounded-xl px-3 py-3 text-xs mono text-cyan-300 outline-none cursor-pointer">
+            <option value="max">🎬 Max (4K/2K/1080p)</option>
+            <option value="1080p">📱 1080p MP4</option>
+            <option value="720p">⚡ 720p Fast</option>
+            <option value="audio_mp3">🎵 MP3 (320k)</option>
+            <option value="audio_m4a">🎧 M4A (AAC)</option>
+          </select>
+          <button onclick="resolveStream()" id="resolveBtn" class="btn-gradient px-6 py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer font-bold whitespace-nowrap">
             <span>⚡ Resolve</span>
           </button>
         </div>
@@ -280,6 +303,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <!-- Toast Notification Pill -->
   <div id="toast" class="fixed bottom-6 right-6 z-50 glass bg-slate-900/95 border-cyan-400/50 text-white px-5 py-3 rounded-xl text-sm shadow-2xl shadow-cyan-500/20 hidden transition-all duration-300">
     Notification
+  </div>
+
+  <!-- Batch Download Modal -->
+  <div id="batchModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+    <div class="glass max-w-xl w-full rounded-2xl p-6 border border-cyan-500/30 shadow-2xl flex flex-col gap-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <span>📑</span> Batch Stream Downloader
+        </h3>
+        <button onclick="closeBatchModal()" class="text-slate-400 hover:text-white text-xl cursor-pointer">&times;</button>
+      </div>
+      <p class="text-xs text-slate-400">
+        Paste multiple video, live, or stream URLs below (one per line):
+      </p>
+      <textarea id="batchUrlsInput" rows="6" placeholder="https://www.tiktok.com/@creator/live&#10;https://www.youtube.com/watch?v=...&#10;https://twitch.tv/..." class="glass-input rounded-xl p-3 text-xs mono text-white outline-none w-full"></textarea>
+      <div class="flex justify-end gap-3">
+        <button onclick="closeBatchModal()" class="px-4 py-2 rounded-xl glass text-xs text-slate-300 cursor-pointer">Cancel</button>
+        <button onclick="submitBatchDownload()" class="btn-gradient px-5 py-2 rounded-xl text-xs font-bold cursor-pointer">🚀 Start Batch</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -400,11 +443,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const title = currentStream.title || 'stream';
       const uploader = currentStream.uploader || '';
       const isLive = currentStream.is_live !== undefined ? currentStream.is_live : true;
-      await triggerDownload(url, title, type === 'audio', uploader, isLive);
+      const q = document.getElementById('qualitySelect').value;
+      const isAudio = (type === 'audio') || q.startsWith('audio_');
+      await triggerDownload(url, title, isAudio, uploader, isLive, q);
     }
 
-    async function triggerDownload(url, title, isAudio, uploader, isLive) {
-      showToast(`Started download (${isAudio ? 'MP3 Audio' : 'Video'})...`);
+    async function triggerDownload(url, title, isAudio, uploader, isLive, qPref) {
+      const q = qPref || document.getElementById('qualitySelect').value;
+      showToast(`Started download (${isAudio ? 'Audio' : 'Video'})...`);
       try {
         const resp = await fetch('/api/download', {
           method: 'POST',
@@ -414,16 +460,102 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             title: title || (currentStream ? currentStream.title : ''),
             uploader: uploader || (currentStream ? currentStream.uploader : ''),
             is_live: isLive !== undefined ? isLive : (currentStream ? currentStream.is_live : false),
-            audio_only: isAudio,
+            audio_only: isAudio || q.startsWith('audio_'),
+            quality_preference: q,
             referer: document.getElementById('streamUrlInput').value
           })
         });
         const res = await resp.json();
         if (res.status === 'started') {
-          showToast('Downloading in background! Check Downloads tab.');
+          showToast('Downloading! Tracking in active queue.');
+          pollActiveDownloads();
         }
       } catch (e) {
         showToast('Download request failed');
+      }
+    }
+
+    function openBatchModal() {
+      document.getElementById('batchModal').classList.remove('hidden');
+    }
+
+    function closeBatchModal() {
+      document.getElementById('batchModal').classList.add('hidden');
+    }
+
+    async function submitBatchDownload() {
+      const txt = document.getElementById('batchUrlsInput').value.trim();
+      const urls = txt.split('\n').map(u => u.trim()).filter(u => u.startsWith('http'));
+      if (urls.length === 0) {
+        showToast('Please enter valid URLs');
+        return;
+      }
+      closeBatchModal();
+      showToast(`Starting batch download for ${urls.length} items...`);
+      const q = document.getElementById('qualitySelect').value;
+      await fetch('/api/batch_download', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          urls: urls,
+          quality_preference: q,
+          audio_only: q.startsWith('audio_')
+        })
+      });
+      pollActiveDownloads();
+    }
+
+    let activePollTimer = null;
+    async function pollActiveDownloads() {
+      try {
+        const resp = await fetch('/api/downloads/active');
+        const jobs = await resp.json();
+        const container = document.getElementById('activeDownloadsContainer');
+        const list = document.getElementById('activeJobsList');
+        const countLbl = document.getElementById('activeCount');
+
+        const running = jobs.filter(j => !j.completed);
+        if (running.length === 0 && jobs.length === 0) {
+          container.classList.add('hidden');
+          return;
+        }
+
+        container.classList.remove('hidden');
+        countLbl.innerText = `${running.length} running • ${jobs.length} total`;
+        list.innerHTML = '';
+
+        jobs.slice(-5).reverse().forEach(j => {
+          const item = document.createElement('div');
+          item.className = 'glass p-3 rounded-xl flex flex-col gap-1.5 text-xs';
+          const pct = Math.min(100, Math.max(0, j.progress || 0));
+          const isDone = j.status === 'completed';
+          const isFail = j.status === 'failed';
+          const statusColor = isDone ? 'text-emerald-400' : (isFail ? 'text-red-400' : 'text-cyan-400');
+
+          item.innerHTML = `
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-white truncate max-w-md">${j.title}</span>
+              <span class="mono ${statusColor} font-bold">${isDone ? 'COMPLETED' : (isFail ? 'FAILED' : pct.toFixed(1) + '%')}</span>
+            </div>
+            <div class="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden border border-white/5">
+              <div class="h-full bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all duration-300" style="width: ${pct}%"></div>
+            </div>
+            <div class="flex items-center justify-between text-[11px] text-slate-400 mono">
+              <span>${j.status.toUpperCase()}</span>
+              <span>${j.speed || '--'} • ETA: ${j.eta || '--'}</span>
+            </div>
+          `;
+          list.appendChild(item);
+        });
+
+        if (running.length > 0) {
+          if (activePollTimer) clearTimeout(activePollTimer);
+          activePollTimer = setTimeout(pollActiveDownloads, 1200);
+        } else {
+          loadHistory();
+        }
+      } catch (e) {
+        // ignore
       }
     }
 
@@ -536,6 +668,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     window.addEventListener('DOMContentLoaded', () => {
       checkEnvStatus();
+      pollActiveDownloads();
     });
   </script>
 </body>
@@ -565,6 +698,10 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/setup":
             threading.Thread(target=launch_onboarding_gui, daemon=True).start()
             self._send_json({"status": "launched"})
+            return
+
+        if parsed.path == "/api/downloads/active":
+            self._send_json(DOWNLOAD_MANAGER.get_active_jobs())
             return
 
         if parsed.path == "/api/resolve":
@@ -648,6 +785,10 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
             audio_only = data.get("audio_only", False)
             referer = data.get("referer")
             is_live = data.get("is_live", False)
+            q_pref = data.get("quality_preference", "max")
+
+            job_id = f"job-{int(time.time()*1000)}"
+            DOWNLOAD_MANAGER.start_job(job_id, title or "Media Download", stream_url)
 
             # Run download asynchronously in worker thread
             def _worker():
@@ -661,19 +802,62 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
                     target_title = meta.get("title")
                     target_uploader = meta.get("uploader") or target_uploader
                     target_is_live = meta.get("is_live", target_is_live)
+                    DOWNLOAD_MANAGER.update_job(job_id, progress=0.0, status="downloading")
 
-                run_ytdlp_download(
+                def on_prog(pct, speed, eta):
+                    DOWNLOAD_MANAGER.update_job(job_id, progress=pct, speed=speed, eta=eta, status="downloading")
+
+                ret = run_ytdlp_download(
                     stream_url=stream_url,
                     title=target_title,
                     uploader=target_uploader,
                     referer=referer,
                     audio_only=audio_only,
                     is_live=target_is_live,
+                    quality_preference=q_pref,
+                    progress_callback=on_prog,
                     respect_conf_output=True
                 )
+                DOWNLOAD_MANAGER.finish_job(job_id, success=(ret == 0))
 
             threading.Thread(target=_worker, daemon=True).start()
-            self._send_json({"status": "started"})
+            self._send_json({"status": "started", "job_id": job_id})
+            return
+
+        if parsed.path == "/api/batch_download":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            data = json.loads(body)
+
+            urls = data.get("urls", [])
+            q_pref = data.get("quality_preference", "max")
+            audio_only = data.get("audio_only", False)
+
+            def _batch_worker():
+                for u in urls:
+                    meta = resolve_stream_metadata(u)
+                    t_name = meta.get("title") or u
+                    u_name = meta.get("uploader")
+                    j_id = f"job-{int(time.time()*1000)}"
+                    DOWNLOAD_MANAGER.start_job(j_id, t_name, u)
+
+                    def b_prog(pct, speed, eta):
+                        DOWNLOAD_MANAGER.update_job(j_id, progress=pct, speed=speed, eta=eta, status="downloading")
+
+                    ret = run_ytdlp_download(
+                        stream_url=u,
+                        title=t_name,
+                        uploader=u_name,
+                        is_live=meta.get("is_live", False),
+                        audio_only=audio_only,
+                        quality_preference=q_pref,
+                        progress_callback=b_prog,
+                        respect_conf_output=True
+                    )
+                    DOWNLOAD_MANAGER.finish_job(j_id, success=(ret == 0))
+
+            threading.Thread(target=_batch_worker, daemon=True).start()
+            self._send_json({"status": "batch_started", "count": len(urls)})
             return
 
         self.send_response(404)
