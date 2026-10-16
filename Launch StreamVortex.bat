@@ -1,165 +1,139 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 title StreamVortex // Powered by yt-dlp
+chcp 65001 >nul 2>&1
+
+:: Set working directory to the script's own folder
 cd /d "%~dp0"
 
-:: 1. Verify Python availability
-where python >nul 2>&1
-if %errorlevel% neq 0 (
-    if exist "StreamVortex.exe" (
-        echo [INFO] Python not detected, launching standalone StreamVortex.exe...
-        start "" "StreamVortex.exe"
-        exit /b 0
+:: ============================================================================
+:: 1. Intelligent Python & Standalone Executable Discovery
+:: ============================================================================
+set "PYTHON_EXE="
+set "CLI_CMD="
+
+:: Test if system 'python' command is functional (and filter out broken WindowsApps shims)
+for /f "delims=" %%I in ('where python 2^>nul') do (
+    if "!PYTHON_EXE!"=="" (
+        set "CAND_PY=%%I"
+        echo !CAND_PY! | findstr /i "WindowsApps" >nul 2>&1
+        if !errorlevel! neq 0 (
+            "!CAND_PY!" -c "import sys; sys.exit(0)" >nul 2>&1
+            if !errorlevel! equ 0 (
+                set "PYTHON_EXE=!CAND_PY!"
+            )
+        )
     )
+)
+
+:: Test Python launcher 'py -3' if python command was not resolved
+if "!PYTHON_EXE!"=="" (
+    py -3 -c "import sys; sys.exit(0)" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "PYTHON_EXE=py -3"
+    )
+)
+
+:: Search standard Windows installation directories
+if "!PYTHON_EXE!"=="" (
+    for %%P in (
+        "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python39\python.exe"
+        "C:\Python313\python.exe"
+        "C:\Python312\python.exe"
+        "C:\Python311\python.exe"
+        "C:\Python310\python.exe"
+        "C:\Program Files\Python313\python.exe"
+        "C:\Program Files\Python312\python.exe"
+        "C:\Program Files\Python311\python.exe"
+        "C:\Program Files\Python310\python.exe"
+    ) do (
+        if "!PYTHON_EXE!"=="" (
+            if exist %%P (
+                %%P -c "import sys; sys.exit(0)" >nul 2>&1
+                if !errorlevel! equ 0 set "PYTHON_EXE=%%~P"
+            )
+        )
+    )
+)
+
+:: Configure execution command
+if not "!PYTHON_EXE!"=="" (
+    set "CLI_CMD="!PYTHON_EXE!" -m ytdlp_smartstream.cli"
+) else if exist "StreamVortex.exe" (
+    set "CLI_CMD=".\StreamVortex.exe""
+)
+
+:: If neither Python nor StreamVortex.exe is present, offer 1-click Python setup
+if "!CLI_CMD!"=="" (
     cls
     echo ========================================================================
     echo   StreamVortex - First Time Setup Required
     echo ========================================================================
     echo.
-    echo   Python was not detected on your device.
+    echo   Neither Python 3.9+ nor StreamVortex.exe was detected on this PC.
     echo.
-    set /p INSTALL_PY="  Would you like StreamVortex to auto-install Python 3.11 now? (Y/N): "
-    if /i "%INSTALL_PY%"=="Y" (
-        echo.
-        echo   [1/2] Downloading official Python 3.11 Windows installer...
-        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\python_installer.exe'"
-        echo   [2/2] Launching Python setup (adding to PATH)...
-        "%TEMP%\python_installer.exe" /passive InstallAllUsers=0 Include_launcher=1 PrependPath=1
-        echo.
-        echo   [+] Python installed! Please restart this launcher.
-        pause
-        exit /b 0
-    )
+    set "INSTALL_PY=Y"
+    set /p INSTALL_PY="  Auto-download and configure official Python 3.11 now? (Y/N) [Y]: "
+    if not defined INSTALL_PY set "INSTALL_PY=Y"
+    if /i not "!INSTALL_PY!"=="Y" goto NO_INSTALL
+
+    echo.
+    echo   [1/2] Downloading official Python 3.11 Windows 64-bit installer...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\python_installer.exe'"
+    echo   [2/2] Installing Python with PATH registration...
+    "%TEMP%\python_installer.exe" /passive InstallAllUsers=0 Include_launcher=1 PrependPath=1 Include_pip=1
+    echo.
+    echo   [+] Python installed! Please restart this launcher.
+    pause
+    exit /b 0
+
+    :NO_INSTALL
     echo.
     echo Please install Python 3.9+ from https://www.python.org/
-    echo Make sure to check the box 'Add Python to PATH' during installation.
+    echo Be sure to check 'Add Python to PATH' during installation.
     echo.
     pause
     exit /b 1
 )
 
-:MENU
-cls
-echo ========================================================================
-echo   StreamVortex v1.0 -- Universal Stream Studio (Powered by yt-dlp)
-echo ========================================================================
-echo   * Resilient Live and VOD Extractor Engine for yt-dlp
-echo   * Universal HLS / DASH / M3U8 Stream Sniffer (Playwright CDP)
-echo   * TikTok Live Watchdog, Lossless Recorder, and Native yt-dlp Plugin
-echo ========================================================================
-echo.
-echo   [1] Launch Desktop GUI Studio (Recommended - Visual Window)
-echo   [2] Launch Web Studio in Browser (http://127.0.0.1:8765)
-echo   [3] 1-Click Zero-Setup Wizard (Install yt-dlp, FFmpeg, Python, VLC)
-echo   [4] Launch Interactive Control Center (Terminal Wizard)
-echo   [5] Run System Diagnostics (Doctor Health Check)
-echo   [6] Build Standalone StreamVortex.exe
-echo   [7] Open Downloads Folder
-echo   [8] Exit
-echo.
-echo ========================================================================
-set "CHOICE="
-set /p CHOICE="  Select an option [1-8] (Default: 1): "
+:: ============================================================================
+:: 2. Launch Interactive CLI or Forward Drag-and-Drop / Arguments
+:: ============================================================================
+if not "%~1"=="" (
+    set "ARG1=%~1"
 
-if "%CHOICE%"=="" set CHOICE=1
-if "%CHOICE%"=="1" goto GUI
-if "%CHOICE%"=="2" goto WEBUI
-if "%CHOICE%"=="3" goto SETUP
-if "%CHOICE%"=="4" goto WIZARD
-if "%CHOICE%"=="5" goto DOCTOR
-if "%CHOICE%"=="6" goto BUILD_EXE
-if "%CHOICE%"=="7" goto OPEN_FOLDER
-if "%CHOICE%"=="8" goto EXIT
+    :: Case A: CLI Option Flag passed (e.g. --gui, --web, --doctor)
+    if "!ARG1:~0,1!"=="-" (
+        !CLI_CMD! %*
+        goto FINISH
+    )
 
-echo.
-echo [!] Invalid selection, please choose 1-8.
-timeout /t 2 >nul
-goto MENU
+    :: Case B: URL passed directly (http://, https://, or smart:)
+    if /i "!ARG1:~0,4!"=="http" (
+        !CLI_CMD! "%~1"
+        goto FINISH
+    )
+    if /i "!ARG1:~0,6!"=="smart:" (
+        !CLI_CMD! "%~1"
+        goto FINISH
+    )
 
-:GUI
-cls
-echo.
-echo Launching StreamVortex Desktop Studio...
-if exist "StreamVortex.exe" (
-    start "" "StreamVortex.exe" --gui
-) else (
-    python -m ytdlp_smartstream.cli --gui
+    :: Case C: File or Folder Dragged and Dropped for Container Repair
+    !CLI_CMD! --fix "%~1"
+    goto FINISH
 )
-goto MENU
 
-:WEBUI
-cls
-echo.
-echo ========================================================================
-echo   Starting StreamVortex Web Studio at http://127.0.0.1:8765 ...
-echo   (Press Ctrl+C to stop the Web Studio server)
-echo ========================================================================
-echo.
-if exist "StreamVortex.exe" (
-    "StreamVortex.exe" --web
-) else (
-    python -m ytdlp_smartstream.cli --web
+:: Direct double-click without arguments:
+:: Immediately launch the exact same interactive CLI with up and down arrow keys used by the exe!
+!CLI_CMD!
+
+:FINISH
+if %errorlevel% neq 0 (
+    echo.
+    pause
 )
-pause
-goto MENU
-
-:SETUP
-cls
-echo.
-echo ========================================================================
-echo   StreamVortex Zero-Setup & Onboarding Wizard
-echo ========================================================================
-echo.
-if exist "StreamVortex.exe" (
-    "StreamVortex.exe" --setup
-) else (
-    python -m ytdlp_smartstream.cli --setup
-)
-echo.
-pause
-goto MENU
-
-:WIZARD
-cls
-if exist "StreamVortex.exe" (
-    "StreamVortex.exe" --wizard
-) else (
-    python -m ytdlp_smartstream.cli --wizard
-)
-pause
-goto MENU
-
-:DOCTOR
-cls
-if exist "StreamVortex.exe" (
-    "StreamVortex.exe" --doctor
-) else (
-    python -m ytdlp_smartstream.cli --doctor
-)
-echo.
-pause
-goto MENU
-
-:BUILD_EXE
-cls
-echo.
-echo [Build] Compiling StreamVortex into a standalone executable (StreamVortex.exe)...
-python build_exe.py
-echo.
-pause
-goto MENU
-
-:OPEN_FOLDER
-cls
-if exist "StreamVortex.exe" (
-    "StreamVortex.exe" --open-folder
-) else (
-    python -m ytdlp_smartstream.config
-)
-goto MENU
-
-:EXIT
-cls
-echo Goodbye! Happy streaming.
-timeout /t 1 >nul
-exit /b 0
+exit /b %errorlevel%

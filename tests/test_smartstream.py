@@ -5,6 +5,12 @@ Unit and integration tests for StreamVortex.
 import unittest
 import sys
 from pathlib import Path
+
+# Ensure local project repository is prioritized on sys.path
+root_dir = str(Path(__file__).resolve().parent.parent)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 from ytdlp_smartstream.sniffer import sniff_static
 from ytdlp_smartstream.tiktok_resolver import (
     _parse_stream_data_json,
@@ -426,11 +432,289 @@ class TestStreamVortex(unittest.TestCase):
             self.assertFalse(part_file.exists(), "Part file should have been cleaned up")
             self.assertTrue(valid_file.exists(), "Valid non-empty file should remain untouched")
 
+    def test_destination_regex(self):
+        from ytdlp_smartstream.engine import DESTINATION_REGEX
+        line1 = '[download] Destination: C:\\Tools\\Videos\\stream_live.mp4'
+        m1 = DESTINATION_REGEX.search(line1)
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1.group(1), 'C:\\Tools\\Videos\\stream_live.mp4')
+
+        line2 = '[Merger] Merging formats into "C:\\Tools\\Videos\\stream_live.mkv"'
+        m2 = DESTINATION_REGEX.search(line2)
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2.group(1), 'C:\\Tools\\Videos\\stream_live.mkv')
+
+    def test_aria2_progress_regex(self):
+        from ytdlp_smartstream.engine import ARIA2_PROGRESS_REGEX
+        line = '[#06620b 45MiB/120MiB(37%) CN:8 DL:12MiB ETA:6s]'
+        m = ARIA2_PROGRESS_REGEX.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), '45MiB')
+        self.assertEqual(m.group(2), '120MiB')
+        self.assertEqual(m.group(3), '37')
+        self.assertEqual(m.group(4), '12MiB')
+        self.assertEqual(m.group(5), '6s')
+
+    def test_download_manager_lifecycle(self):
+        from ytdlp_smartstream.engine import DownloadManager
+        import tempfile
+        dm = DownloadManager()
+        job = dm.start_job("job-test-1", "Test Stream", "https://example.com/live", is_live=True)
+        self.assertEqual(job["id"], "job-test-1")
+        self.assertTrue(job["is_live"])
+        self.assertEqual(job["status"], "starting")
+
+        dm.update_job("job-test-1", progress=None, speed="2.5 MB/s", eta="REC 00:01:30", size="15.2 MB", status="Recording Live")
+        j_updated = dm.get_job("job-test-1")
+        self.assertEqual(j_updated["speed"], "2.5 MB/s")
+        self.assertEqual(j_updated["eta"], "REC 00:01:30")
+        self.assertEqual(j_updated["size"], "15.2 MB")
+        self.assertEqual(j_updated["status"], "Recording Live")
+
+        # Test stop and part promotion
+        with tempfile.TemporaryDirectory() as td:
+            target_file = Path(td) / "live.mp4"
+            part_file = Path(td) / "live.mp4.part"
+            part_file.write_bytes(b"recorded live chunk data")
+
+            dm.register_process("job-test-1", None, target_path=str(target_file))
+            dm.stop_job("job-test-1")
+
+            self.assertTrue(dm.is_stop_requested("job-test-1"))
+            self.assertTrue(target_file.exists(), "Target file should have been promoted from .part")
+            self.assertFalse(part_file.exists())
+            self.assertEqual(target_file.read_bytes(), b"recorded live chunk data")
+
+    def test_find_aria2c_decommissioned(self):
+        from ytdlp_smartstream.engine import find_aria2c
+        self.assertIsNone(find_aria2c(), "aria2c must be decommissioned and return None")
+
+    def test_play_media_target_fallback(self):
+        from unittest.mock import patch
+        from ytdlp_smartstream.engine import play_media_target
+        # Test with empty target
+        ok, desc = play_media_target("")
+        self.assertFalse(ok)
+
+        # Test with valid URL format (mocking subprocess.Popen)
+        with patch("subprocess.Popen") as mock_popen:
+            ok, desc = play_media_target("https://example.com/test.m3u8")
+            self.assertTrue(ok)
+            self.assertIn("Launched in", desc)
+
+    def test_expanded_detect_platform(self):
+        from ytdlp_smartstream.engine import detect_platform
+        p_rumble = detect_platform("https://rumble.com/v12345-video.html")
+        self.assertEqual(p_rumble["id"], "rumble")
+
+        p_vimeo = detect_platform("https://vimeo.com/123456789")
+        self.assertEqual(p_vimeo["id"], "vimeo")
+
+        p_bili = detect_platform("https://www.bilibili.com/video/BV1xx411c7mD")
+        self.assertEqual(p_bili["id"], "bilibili")
+
+        p_daily = detect_platform("https://www.dailymotion.com/video/x7tgad0")
+        self.assertEqual(p_daily["id"], "dailymotion")
+
+        p_hls = detect_platform("https://cdn.example.com/live/stream.m3u8?token=xyz")
+        self.assertEqual(p_hls["id"], "hls")
+        self.assertEqual(p_hls["type"], "live")
+
+        p_mp4 = detect_platform("https://cdn.example.com/videos/movie.mp4")
+        self.assertEqual(p_mp4["id"], "directmedia")
+        self.assertEqual(p_mp4["type"], "vod")
+
+        p_feed = detect_platform("https://cdn.example.com/live/stream.flv")
+        self.assertEqual(p_feed["id"], "livefeed")
+
+    def test_resolve_stream_metadata_direct_url(self):
+        from ytdlp_smartstream.engine import resolve_stream_metadata
+        res = resolve_stream_metadata("https://pull-live.example.com/channel_hd.m3u8")
+        self.assertTrue(res["is_live"])
+        self.assertEqual(res["direct_url"], "https://pull-live.example.com/channel_hd.m3u8")
+        self.assertTrue(len(res["formats"]) > 0)
+        self.assertEqual(res["formats"][0]["protocol"], "m3u8_native")
+
     def test_version(self):
         import ytdlp_smartstream
-        self.assertEqual(ytdlp_smartstream.__version__, "1.0")
+        self.assertEqual(ytdlp_smartstream.__version__, "1.2")
+
+    def test_sniff_container(self):
+        import tempfile
+        from ytdlp_smartstream.engine import sniff_container
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00")
+            flv_path = f.name
+        try:
+            self.assertEqual(sniff_container(flv_path), "flv")
+        finally:
+            Path(flv_path).unlink(missing_ok=True)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2mp41")
+            mp4_path = f.name
+        try:
+            self.assertEqual(sniff_container(mp4_path), "mp4")
+        finally:
+            Path(mp4_path).unlink(missing_ok=True)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"\x1a\x45\xdf\xa3\x93\x42\x86\x81\x01\x42\xf7\x81\x01\x42\xf2")
+            mkv_path = f.name
+        try:
+            self.assertEqual(sniff_container(mkv_path), "matroska")
+        finally:
+            Path(mkv_path).unlink(missing_ok=True)
+
+        # MPEG-TS 188-byte packets with sync byte 0x47
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            packet = bytes([0x47]) + bytes(187)
+            f.write(packet * 8)
+            ts_path = f.name
+        try:
+            self.assertEqual(sniff_container(ts_path), "mpegts")
+        finally:
+            Path(ts_path).unlink(missing_ok=True)
+
+    def test_progress_frag_regex(self):
+        from ytdlp_smartstream.engine import PROGRESS_FRAG_REGEX
+        line1 = "[download]   12.3MiB at  2.45MiB/s (00:05:12) (frag 42)"
+        m1 = PROGRESS_FRAG_REGEX.search(line1)
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1.group(1), "12.3MiB")
+        self.assertEqual(m1.group(2), "2.45MiB/s")
+        self.assertEqual(m1.group(3), "42")
+
+        line2 = "[download] 5.0MiB at 1.0MiB/s (frag 10/100)"
+        m2 = PROGRESS_FRAG_REGEX.search(line2)
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2.group(3), "10")
+        self.assertEqual(m2.group(4), "100")
+
+    def test_plugin_imports(self):
+        from yt_dlp_plugins.extractor.tiktok_smart import TikTokSmartLiveIE, TikTokSmartVideoIE
+        from yt_dlp_plugins.extractor.universal_smart import UniversalSmartIE
+        from yt_dlp_plugins.postprocessor.smartstream_fixup import SmartStreamFixupPP
+
+        self.assertEqual(TikTokSmartLiveIE.IE_NAME, "tiktok:smartlive")
+        self.assertEqual(TikTokSmartVideoIE.IE_NAME, "tiktok:smartvideo")
+        self.assertEqual(UniversalSmartIE.IE_NAME, "smartstream")
+        self.assertIsNotNone(SmartStreamFixupPP)
+
+    def test_interrupted_live_fixup_part(self):
+        import tempfile
+        from yt_dlp_plugins.postprocessor.smartstream_fixup import (
+            emergency_fixup, _ACTIVE_DOWNLOADS, _FIXED_FILES, _ACTIVE_LOCK
+        )
+        with tempfile.TemporaryDirectory() as td:
+            final_mp4 = Path(td) / "tiktok_live_stream.mp4"
+            part_file = Path(td) / "tiktok_live_stream.mp4.part"
+
+            # Write MPEG-TS packets into the .part file (simulating interrupted live download)
+            packet = bytes([0x47]) + bytes(187)
+            part_file.write_bytes(packet * 32)
+
+            abs_final = str(final_mp4.resolve())
+            with _ACTIVE_LOCK:
+                _ACTIVE_DOWNLOADS[abs_final] = {
+                    'tmp': str(part_file.resolve()),
+                    'info': {'title': 'Live Stream'},
+                    'ydl': None
+                }
+
+            emergency_fixup(reason='Test Interruption')
+
+            # Either it was remuxed to final_mp4 or renamed to honest extension (.ts)
+            has_result = final_mp4.exists() or (Path(td) / "tiktok_live_stream.ts").exists()
+            self.assertTrue(has_result, "Emergency fixup must produce a valid output file")
+            self.assertFalse(part_file.exists(), ".part file must be cleaned up after fixup")
+
+    def test_pywebview_api_state(self):
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        api = StreamVortexApi(port=8765)
+        state = api.get_initial_state()
+        self.assertIn("download_dir", state)
+        self.assertIn("active_conf", state)
+        self.assertIn("active_jobs", state)
+        self.assertEqual(state["server_port"], 8765)
+
+    def test_pywebview_api_inspect_container(self):
+        import tempfile
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        api = StreamVortexApi(port=8765)
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            # Write MPEG-TS bytes into .mp4 file to simulate container mismatch
+            packet = bytes([0x47]) + bytes(187)
+            f.write(packet * 8)
+            p = f.name
+        try:
+            info = api.inspect_container(p)
+            self.assertEqual(info["detected_container"], "mpegts")
+            self.assertEqual(info["extension"], "mp4")
+            self.assertTrue(info["is_mismatched"])
+        finally:
+            Path(p).unlink(missing_ok=True)
+
+    def test_flv_inspection_and_repair(self):
+        import tempfile
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        from ytdlp_smartstream.engine import sniff_container, fixup_recorded_file
+        api = StreamVortexApi(port=8765)
+        with tempfile.NamedTemporaryFile(suffix=".flv", delete=False) as f:
+            # Write standard FLV header (FLV version 1, audio + video tags, 9-byte header + prev_tag_size_0)
+            f.write(b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00" + b"\x00" * 64)
+            p = f.name
+        try:
+            # 1. Sniffer verification
+            self.assertEqual(sniff_container(p), "flv")
+
+            # 2. PyWebView inspect_container verification
+            info = api.inspect_container(p)
+            self.assertIn("flv", info["detected_container"].lower())
+            self.assertEqual(info["extension"], "flv")
+            self.assertTrue(info["is_mismatched"])
+            self.assertIn("MP4", info["status_label"])
+        finally:
+            Path(p).unlink(missing_ok=True)
+
+    def test_direct_hls_recognition_in_sniffer(self):
+        from ytdlp_smartstream.sniffer import smart_sniff
+        hls_url = "https://cdn.example.com/live/channel.m3u8?token=secure123"
+        sniffed = smart_sniff(hls_url)
+        self.assertIsNotNone(sniffed)
+        self.assertEqual(sniffed.url, hls_url)
+        self.assertEqual(sniffed.stream_type, "hls")
+        self.assertIn("User-Agent", sniffed.headers)
+        self.assertIn("Referer", sniffed.headers)
+
+    def test_direct_hls_in_universal_ie(self):
+        from yt_dlp_plugins.extractor.universal_smart import UniversalSmartIE
+        ie = UniversalSmartIE()
+        hls_url = "https://cdn.example.com/streams/master.m3u8"
+        sniffed = ie._sniff(hls_url, timeout=5)
+        self.assertEqual(len(sniffed["streams"]), 1)
+        self.assertEqual(sniffed["streams"][0]["url"], hls_url)
+        self.assertEqual(sniffed["streams"][0]["protocol"], "hls")
+
+    def test_hls_classify_and_header_propagation(self):
+        from yt_dlp_plugins.extractor.smartstream_common import classify, build_formats
+        fmt_dict = {"url": "https://pull-hls.example.com/test_playlist.m3u8", "id": "hls-1080p"}
+        self.assertEqual(classify(fmt_dict), "hls")
+
+        # Test build_formats preserves custom headers and marks live
+        class DummyIE:
+            def _extract_m3u8_formats(self, *args, **kwargs):
+                return [{"url": "https://pull-hls.example.com/test_playlist.m3u8", "format_id": "hls-1080p"}]
+        ie = DummyIE()
+        custom_headers = {"Referer": "https://example.com/", "User-Agent": "CustomUA"}
+        built = build_formats(ie, fmt_dict, "test_id", custom_headers, live=True)
+        self.assertEqual(len(built), 1)
+        self.assertEqual(built[0]["http_headers"], custom_headers)
+        self.assertTrue(built[0]["is_live"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

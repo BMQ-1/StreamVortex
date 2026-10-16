@@ -91,6 +91,18 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
                     all_streams=[{"url": u, "type": "hls"} for u in m3u8_clean]
                 )
 
+            # Look for .flv streams
+            flv_matches = [m.replace("\\u002F", "/").replace("\\/", "/") for m in FLV_REGEX.findall(html)]
+            flv_clean = [u for u in flv_matches if not is_ad_or_tracker(u)]
+            if flv_clean:
+                return SniffedStream(
+                    url=flv_clean[0],
+                    stream_type="flv",
+                    headers={"User-Agent": headers["User-Agent"], "Referer": url},
+                    page_title=page_title,
+                    all_streams=[{"url": u, "type": "flv"} for u in flv_clean]
+                )
+
             # Look for .mpd
             mpd_matches = [m.replace("\\u002F", "/").replace("\\/", "/") for m in MPD_REGEX.findall(html)]
             mpd_clean = [u for u in mpd_matches if not is_ad_or_tracker(u)]
@@ -279,8 +291,29 @@ def smart_sniff(
 ) -> Optional[SniffedStream]:
     """
     High-level entry point:
-    Attempts static scan first for speed; falls back to dynamic sniffer if needed.
+    Attempts direct stream recognition, then static scan, and finally dynamic sniffer.
     """
+    # 0. Immediate direct stream detection
+    try:
+        from pathlib import Path
+        parsed = urllib.parse.urlsplit(url)
+        p_lower = parsed.path.lower()
+        u_lower = url.lower()
+        if p_lower.endswith(('.m3u8', '.m3u')) or '.m3u8' in u_lower:
+            stem = Path(parsed.path).stem or "HLS Stream"
+            headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url, "Origin": f"{parsed.scheme}://{parsed.netloc}"}
+            return SniffedStream(url=url, stream_type="hls", headers=headers, page_title=stem, all_streams=[{"url": url, "type": "hls"}])
+        if p_lower.endswith('.mpd') or '.mpd' in u_lower:
+            stem = Path(parsed.path).stem or "DASH Stream"
+            headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url, "Origin": f"{parsed.scheme}://{parsed.netloc}"}
+            return SniffedStream(url=url, stream_type="dash", headers=headers, page_title=stem, all_streams=[{"url": url, "type": "dash"}])
+        if p_lower.endswith('.flv') or '.flv' in u_lower:
+            stem = Path(parsed.path).stem or "FLV Stream"
+            headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url, "Origin": f"{parsed.scheme}://{parsed.netloc}"}
+            return SniffedStream(url=url, stream_type="flv", headers=headers, page_title=stem, all_streams=[{"url": url, "type": "flv"}])
+    except Exception:
+        pass
+
     if not force_dynamic:
         static_result = sniff_static(url)
         if static_result:

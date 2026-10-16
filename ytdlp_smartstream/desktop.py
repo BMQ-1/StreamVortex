@@ -1,12 +1,14 @@
 """
-StreamVortex Modern Desktop Studio GUI.
-Faithfully recreates the modern dark-mode fluent mockup concept with:
-- Left sidebar navigation (Downloads, Library/History, Batch Mode, Settings, About)
-- Video / Playlist URL bar with Paste & Analyze
-- Save Folder selector with drag-and-drop and yt-dlp.conf synchronization
-- Format options (Quality, Output container, Subtitles, MP3 audio, Metadata, Thumbnails)
-- Real-time Downloads Queue & Status tracker with thumbnails, progress bars, speed, and ETA
-- Full integration with yt-dlp, FFmpeg, aria2c, and live streaming
+StreamVortex Modern Desktop Studio (PyWebView Native Engine).
+Universal yt-dlp & Live Stream Suite with:
+- Embedded HLS.js live video player for real-time stream preview
+- Native PyWebView bridge with two-way JS <-> Python API
+- Left sidebar navigation (Studio & Player, Library/History, Batch Downloader, Watchdog, Container Repair, Settings)
+- Native Windows Folder and File Dialog integration
+- Real-time download queue with live progress, speed, ETA, and cancellation
+- Live Creator Watchdog with auto-record support
+- Lossless container repair and MPEG-TS / FLV / .part recovery
+- yt-dlp.conf bidirectional synchronization
 """
 
 import sys
@@ -15,9 +17,13 @@ import re
 import time
 import json
 import shutil
+import socket
+import urllib.parse
+import urllib.request
 import threading
 import subprocess
 from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any, List
 
 # Windows-specific process AppUserModelID and DPI awareness
@@ -29,43 +35,32 @@ if sys.platform == "win32":
         pass
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("streamvortex.studio.app.v1.1")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("streamvortex.studio.app.v1.2")
     except Exception:
         pass
 
-import customtkinter as ctk
-from PIL import Image, ImageTk
+try:
+    import webview
+    HAS_WEBVIEW = True
+except ImportError:
+    HAS_WEBVIEW = False
 
-from .config import get_download_dir, get_config, save_config, get_history, add_history_entry
-from .engine import (
-    find_ytdlp, find_ffmpeg, find_ytdlp_conf, get_conf_download_dir,
-    update_ytdlp_conf_destinations, build_format_args, resolve_stream_metadata,
-    run_ytdlp_download, run_ffmpeg_record, check_free_disk_space, detect_platform,
-    DOWNLOAD_MANAGER
+from .config import (
+    get_download_dir, get_config, save_config,
+    get_history, add_history_entry,
+    get_watchlist, add_to_watchlist, remove_from_watchlist
 )
-from .onboarding import launch_onboarding_gui, check_environment_status
-from .web_ui import launch_web_ui
+from .engine import (
+    find_ytdlp, find_ffmpeg, find_ffprobe, find_player, find_ytdlp_conf,
+    get_conf_download_dir, update_ytdlp_conf_destinations, build_format_args,
+    resolve_stream_metadata, run_ytdlp_download, check_free_disk_space,
+    detect_platform, play_media_target, clean_target_url,
+    sniff_container, fixup_recorded_file, DOWNLOAD_MANAGER
+)
+from .sniffer import smart_sniff, DEFAULT_USER_AGENT
+from .tiktok_resolver import resolve_tiktok_live_fast, resolve_tiktok_live, resolve_tiktok_video
+from .onboarding import check_environment_status, launch_onboarding_gui
 from .doctor import run_doctor
-
-# Refined high-end dark fluent color palette
-COLOR_BG_DARK = "#0d111a"          # Obsidian window background
-COLOR_SIDEBAR = "#090c13"          # Sleek sidebar tone
-COLOR_SIDEBAR_ACTIVE = "#162035"   # Active nav pill background
-COLOR_SIDEBAR_HOVER = "#111726"    # Hover nav pill
-COLOR_ACCENT = "#00d2ff"           # Vibrant electric cyan
-COLOR_ACCENT_HOVER = "#00b4db"     # Cyan button hover
-COLOR_CARD = "#141a27"             # Elevated panel cards
-COLOR_CARD_BORDER = "#1f283d"      # Subtle 1px card border
-COLOR_CARD_HOVER = "#182133"
-COLOR_INPUT_BG = "#0f1420"         # Text input background
-COLOR_INPUT_BORDER = "#25304a"     # Input border
-COLOR_BTN_SECONDARY = "#1e2638"    # Secondary button
-COLOR_BTN_SECONDARY_HOVER = "#2a364e"
-COLOR_TEXT_PRIMARY = "#f8fafc"     # Crisp white
-COLOR_TEXT_SECONDARY = "#8b9cb5"   # Muted slate subtext
-COLOR_SUCCESS = "#10b981"          # Emerald green
-COLOR_WARNING = "#f59e0b"          # Amber
-COLOR_DANGER = "#ef4444"           # Red / Live badge
 
 
 def get_asset_path(filename: str) -> Optional[Path]:
@@ -83,1389 +78,1620 @@ def get_asset_path(filename: str) -> Optional[Path]:
     return None
 
 
-class StreamVortexApp:
-    def __init__(self):
-        ctk.set_appearance_mode("Dark")
-        ctk.set_default_color_theme("blue")
+def find_free_port(start_port: int = 8765) -> int:
+    """Finds an available local port for the embedded studio server."""
+    for port in range(start_port, start_port + 50):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', port))
+                return port
+        except OSError:
+            continue
+    return start_port
 
-        self.root = ctk.CTk()
-        self.root.title("StreamVortex Studio - Universal yt-dlp & Live Stream Suite v1.1")
-        self.root.geometry("1160x760")
-        self.root.minsize(1020, 680)
-        self.root.configure(fg_color=COLOR_BG_DARK)
 
-        # Set Window and Taskbar Icons
-        self._apply_window_icons()
+# =============================================================================
+# EMBEDDED LOCAL SERVER FOR ASSETS, HLS PROXY & STREAM PREVIEW
+# =============================================================================
 
-        # Application State
-        self.active_tab = "downloads"
-        self.analyzed_metadata: Optional[Dict[str, Any]] = None
-        self.active_jobs: List[Dict[str, Any]] = []
-        self._clip_last = ""
-        self.yt_version_str = "Checking..."
+class StreamVortexHttpHandler(BaseHTTPRequestHandler):
+    """
+    Local lightweight HTTP server for serving UI, static assets, and proxying HLS streams
+    to bypass cross-origin / header restrictions in the embedded video player.
+    """
+    server_version = "StreamVortexStudio/1.2"
 
-        self._load_app_icons()
-        self._build_main_layout()
-        self._check_system_status_async()
-        self._start_clipboard_monitor()
+    def log_message(self, format, *args):
+        # Suppress routine HTTP log spam in console
+        pass
 
-    def _apply_window_icons(self):
-        """Sets native Win32 window icons, taskbar identity, and Tk iconphoto."""
-        ico_path = get_asset_path("StreamVortex.ico") or get_asset_path("icon.ico")
-        if ico_path and sys.platform == "win32":
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Range, User-Agent, Referer")
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urllib.parse.urlsplit(self.path)
+
+        # 1. Favicon / Icon
+        if parsed.path in ["/icon.png", "/favicon.ico"]:
+            ico = get_asset_path("icon.png") or get_asset_path("icon_64.png")
+            if ico and ico.exists():
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(ico.read_bytes())
+                return
+
+        # 2. HLS Manifest Proxy (Rewrites URLs and injects CORS headers for seamless live playback)
+        if parsed.path == "/api/proxy_hls":
+            query = urllib.parse.parse_qs(parsed.query)
+            target_url = query.get("url", [None])[0]
+            if not target_url:
+                self.send_error(400, "Missing url parameter")
+                return
+
             try:
-                self.root.iconbitmap(default=str(ico_path))
-            except Exception:
-                try:
-                    self.root.iconbitmap(str(ico_path))
-                except Exception:
-                    pass
-            # Native Win32 WM_SETICON for direct HWND taskbar binding
-            try:
-                import ctypes
-                self.root.update_idletasks()
-                hwnd = self.root.winfo_id()
-                parent_hwnd = ctypes.windll.user32.GetParent(hwnd)
-                target_hwnd = parent_hwnd if parent_hwnd else hwnd
-                IMAGE_ICON = 1
-                LR_LOADFROMFILE = 0x00000010
-                h_sm = ctypes.windll.user32.LoadImageW(0, str(ico_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-                h_lg = ctypes.windll.user32.LoadImageW(0, str(ico_path), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
-                WM_SETICON = 0x0080
-                if h_sm:
-                    ctypes.windll.user32.SendMessageW(target_hwnd, WM_SETICON, 0, h_sm)
-                if h_lg:
-                    ctypes.windll.user32.SendMessageW(target_hwnd, WM_SETICON, 1, h_lg)
-            except Exception:
-                pass
-
-        png_path = get_asset_path("icon.png") or get_asset_path("icon_64.png")
-        if png_path:
-            try:
-                raw_img = Image.open(png_path)
-                self._photo_icon = ImageTk.PhotoImage(raw_img)
-                self.root.iconphoto(True, self._photo_icon)
-            except Exception:
-                pass
-
-    def _load_app_icons(self):
-        """Loads and prepares application graphics and icons."""
-        self.img_app_logo = None
-        self.img_app_logo_large = None
-        icon_path = get_asset_path("icon.png") or get_asset_path("icon_64.png")
-        if icon_path:
-            try:
-                raw_img = Image.open(icon_path)
-                self.img_app_logo = ctk.CTkImage(light_image=raw_img, dark_image=raw_img, size=(42, 42))
-                self.img_app_logo_large = ctk.CTkImage(light_image=raw_img, dark_image=raw_img, size=(96, 96))
-            except Exception:
-                pass
-
-    def _build_main_layout(self):
-        """Builds the 2-column layout: Left Sidebar + Main Viewport."""
-        self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(1, weight=1)
-
-        # =====================================================================
-        # 1. LEFT SIDEBAR
-        # =====================================================================
-        self.sidebar_frame = ctk.CTkFrame(self.root, width=235, corner_radius=0, fg_color=COLOR_SIDEBAR)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(7, weight=1)
-
-        # Sidebar Header / Brand Logo & Title
-        header_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        header_frame.pack(fill="x", padx=16, pady=(20, 22))
-
-        if self.img_app_logo:
-            logo_lbl = ctk.CTkLabel(header_frame, image=self.img_app_logo, text="")
-            logo_lbl.pack(side="left", padx=(0, 12))
-
-        title_box = ctk.CTkFrame(header_frame, fg_color="transparent")
-        title_box.pack(side="left", fill="x", expand=True)
-
-        title_lbl = ctk.CTkLabel(
-            title_box,
-            text="StreamVortex",
-            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        title_lbl.pack(anchor="w")
-
-        sub_badge = ctk.CTkLabel(
-            title_box,
-            text="STUDIO v1.1",
-            font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
-            text_color=COLOR_ACCENT
-        )
-        sub_badge.pack(anchor="w")
-
-        # Sidebar Navigation Buttons
-        self.nav_buttons: Dict[str, ctk.CTkButton] = {}
-        nav_items = [
-            ("downloads", "⬇   Downloads"),
-            ("library", "📁   Library (History)"),
-            ("batch", "📦   Batch Mode"),
-            ("settings", "⚙   Settings & Tools"),
-            ("about", "💬   About Studio"),
-        ]
-
-        for tab_id, text in nav_items:
-            btn = ctk.CTkButton(
-                self.sidebar_frame,
-                text=text,
-                font=ctk.CTkFont(family="Segoe UI", size=13, weight="normal"),
-                anchor="w",
-                height=42,
-                corner_radius=8,
-                fg_color="transparent",
-                text_color=COLOR_TEXT_SECONDARY,
-                hover_color=COLOR_SIDEBAR_HOVER,
-                command=lambda t=tab_id: self._switch_tab(t)
-            )
-            btn.pack(fill="x", padx=12, pady=3)
-            self.nav_buttons[tab_id] = btn
-
-        # Quick Switch Section
-        quick_sep = ctk.CTkFrame(self.sidebar_frame, height=1, fg_color=COLOR_CARD_BORDER)
-        quick_sep.pack(fill="x", padx=16, pady=(16, 12))
-
-        quick_label = ctk.CTkLabel(
-            self.sidebar_frame,
-            text="QUICK SWITCH",
-            font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
-            text_color="#53647c",
-            anchor="w"
-        )
-        quick_label.pack(fill="x", padx=16, pady=(0, 6))
-
-        web_studio_btn = ctk.CTkButton(
-            self.sidebar_frame,
-            text="🌐  Web Studio (Browser)",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            anchor="w",
-            height=32,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=COLOR_SIDEBAR_HOVER,
-            text_color=COLOR_TEXT_SECONDARY,
-            command=self._on_open_web_studio
-        )
-        web_studio_btn.pack(fill="x", padx=12, pady=2)
-
-        doctor_btn = ctk.CTkButton(
-            self.sidebar_frame,
-            text="🩺  System Diagnostics",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            anchor="w",
-            height=32,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=COLOR_SIDEBAR_HOVER,
-            text_color=COLOR_TEXT_SECONDARY,
-            command=self._on_run_doctor
-        )
-        doctor_btn.pack(fill="x", padx=12, pady=2)
-
-        # Sidebar Footer: Engine version & Health card
-        self.sidebar_footer = ctk.CTkFrame(self.sidebar_frame, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        self.sidebar_footer.pack(side="bottom", fill="x", padx=12, pady=16)
-
-        self.footer_status_pill = ctk.CTkLabel(
-            self.sidebar_footer,
-            text="🟢  yt-dlp Engine Ready",
-            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
-            text_color=COLOR_SUCCESS,
-            anchor="w"
-        )
-        self.footer_status_pill.pack(fill="x", padx=10, pady=(8, 2))
-
-        self.footer_disk_lbl = ctk.CTkLabel(
-            self.sidebar_footer,
-            text="💾  Disk Free: Checking...",
-            font=ctk.CTkFont(family="Segoe UI", size=9),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w"
-        )
-        self.footer_disk_lbl.pack(fill="x", padx=10, pady=(0, 8))
-
-        # =====================================================================
-        # 2. MAIN CONTENT VIEWPORT
-        # =====================================================================
-        self.content_container = ctk.CTkFrame(self.root, corner_radius=0, fg_color=COLOR_BG_DARK)
-        self.content_container.grid(row=0, column=1, sticky="nsew", padx=22, pady=18)
-        self.content_container.grid_rowconfigure(0, weight=1)
-        self.content_container.grid_columnconfigure(0, weight=1)
-
-        # Build View Tabs
-        self.tabs: Dict[str, ctk.CTkFrame] = {
-            "downloads": self._build_downloads_tab(),
-            "library": self._build_library_tab(),
-            "batch": self._build_batch_tab(),
-            "settings": self._build_settings_tab(),
-            "about": self._build_about_tab(),
-        }
-
-        self._switch_tab("downloads")
-
-    def _switch_tab(self, tab_id: str):
-        """Switches the active view in the content container with styling."""
-        self.active_tab = tab_id
-        for t_id, frame in self.tabs.items():
-            if t_id == tab_id:
-                frame.grid(row=0, column=0, sticky="nsew")
-            else:
-                frame.grid_forget()
-
-        # Update sidebar button highlight
-        for t_id, btn in self.nav_buttons.items():
-            if t_id == tab_id:
-                btn.configure(
-                    fg_color=COLOR_SIDEBAR_ACTIVE,
-                    text_color=COLOR_ACCENT,
-                    font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
-                )
-            else:
-                btn.configure(
-                    fg_color="transparent",
-                    text_color=COLOR_TEXT_SECONDARY,
-                    font=ctk.CTkFont(family="Segoe UI", size=13, weight="normal")
-                )
-
-        if tab_id == "library":
-            self._refresh_library_list()
-
-    # =========================================================================
-    # TAB 1: DOWNLOADS VIEW (Matching mockup_concept.jpg)
-    # =========================================================================
-    def _build_downloads_tab(self) -> ctk.CTkFrame:
-        parent = ctk.CTkFrame(self.content_container, fg_color="transparent")
-        parent.grid_rowconfigure(5, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        # --- SECTION 1: Video / Playlist URL ---
-        url_label = ctk.CTkLabel(
-            parent,
-            text="Video / Playlist URL",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        url_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
-
-        url_row = ctk.CTkFrame(parent, fg_color="transparent")
-        url_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        url_row.grid_columnconfigure(0, weight=1)
-
-        self.url_entry = ctk.CTkEntry(
-            url_row,
-            placeholder_text="Paste any video or live link (YouTube, TikTok Live, Twitch, Kick, Twitter, Instagram...)",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            height=40,
-            corner_radius=8,
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER,
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.url_entry.bind("<Return>", lambda e: self._on_analyze_click())
-
-        self.paste_btn = ctk.CTkButton(
-            url_row,
-            text="📋  Paste",
-            width=85,
-            height=40,
-            corner_radius=8,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            command=self._on_paste_click
-        )
-        self.paste_btn.grid(row=0, column=1, padx=(0, 8))
-
-        self.analyze_btn = ctk.CTkButton(
-            url_row,
-            text="⚡  Analyze",
-            width=100,
-            height=40,
-            corner_radius=8,
-            fg_color=COLOR_ACCENT,
-            hover_color=COLOR_ACCENT_HOVER,
-            text_color="#000000",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-            command=self._on_analyze_click
-        )
-        self.analyze_btn.grid(row=0, column=2)
-
-        # Dynamic Video / Stream Preview Card (Appears when analyzed)
-        self.preview_card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        self.preview_card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        self.preview_card.grid_columnconfigure(1, weight=1)
-        self.preview_card.grid_remove()  # Hidden until analyzed
-
-        self.prev_icon_lbl = ctk.CTkLabel(self.preview_card, text="🎬", font=ctk.CTkFont(size=24), width=44)
-        self.prev_icon_lbl.grid(row=0, column=0, rowspan=2, padx=12, pady=10)
-
-        self.prev_title_lbl = ctk.CTkLabel(
-            self.preview_card,
-            text="Stream Title",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
-        )
-        self.prev_title_lbl.grid(row=0, column=1, sticky="w", pady=(8, 2))
-
-        self.prev_meta_lbl = ctk.CTkLabel(
-            self.preview_card,
-            text="Author • Resolution • Format",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w"
-        )
-        self.prev_meta_lbl.grid(row=1, column=1, sticky="w", pady=(0, 8))
-
-        self.prev_badge_lbl = ctk.CTkLabel(
-            self.preview_card,
-            text="READY",
-            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
-            text_color=COLOR_SUCCESS,
-            width=70
-        )
-        self.prev_badge_lbl.grid(row=0, column=2, rowspan=2, padx=14)
-
-        # --- SECTION 2: Save Folder ---
-        save_label = ctk.CTkLabel(
-            parent,
-            text="Save Folder",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        save_label.grid(row=3, column=0, sticky="w", pady=(0, 6))
-
-        save_row = ctk.CTkFrame(parent, fg_color="transparent")
-        save_row.grid(row=4, column=0, sticky="ew", pady=(0, 14))
-        save_row.grid_columnconfigure(0, weight=1)
-
-        initial_folder = str(get_conf_download_dir())
-        self.folder_entry = ctk.CTkEntry(
-            save_row,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            height=38,
-            corner_radius=8,
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER,
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        self.folder_entry.insert(0, initial_folder)
-        self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.folder_entry.bind("<FocusOut>", lambda e: self._on_folder_change())
-        self.folder_entry.bind("<Return>", lambda e: self._on_folder_change())
-
-        self.browse_btn = ctk.CTkButton(
-            save_row,
-            text="Browse...",
-            width=85,
-            height=38,
-            corner_radius=8,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            command=self._on_browse_folder_click
-        )
-        self.browse_btn.grid(row=0, column=1, padx=(0, 8))
-
-        self.open_cur_folder_btn = ctk.CTkButton(
-            save_row,
-            text="↗  Open",
-            width=75,
-            height=38,
-            corner_radius=8,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            command=self._on_open_downloads_folder
-        )
-        self.open_cur_folder_btn.grid(row=0, column=2)
-
-        # --- SECTION 3: Format Options Panel ---
-        fmt_card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        fmt_card.grid(row=5, column=0, sticky="ew", pady=(0, 14), padx=0)
-        fmt_card.grid_columnconfigure(0, weight=1)
-        fmt_card.grid_columnconfigure(1, weight=1)
-
-        fmt_label = ctk.CTkLabel(
-            fmt_card,
-            text="Format Options",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        fmt_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 8))
-
-        # Dropdowns (Left Column)
-        left_opts = ctk.CTkFrame(fmt_card, fg_color="transparent")
-        left_opts.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 10))
-        left_opts.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(left_opts, text="Video Quality", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLOR_TEXT_SECONDARY).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.quality_menu = ctk.CTkOptionMenu(
-            left_opts,
-            values=[
-                "Best Quality (Video + Audio)",
-                "Universal MP4 (1080p)",
-                "Fast (720p)",
-                "Data Saver (480p)",
-                "Respect yt-dlp.conf",
-            ],
-            fg_color=COLOR_BTN_SECONDARY,
-            button_color=COLOR_BTN_SECONDARY_HOVER,
-            button_hover_color=COLOR_ACCENT,
-            dropdown_fg_color=COLOR_CARD,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            height=32
-        )
-        self.quality_menu.set("Best Quality (Video + Audio)")
-        self.quality_menu.grid(row=0, column=1, sticky="ew", pady=6)
-
-        ctk.CTkLabel(left_opts, text="Output Format", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLOR_TEXT_SECONDARY).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.container_menu = ctk.CTkOptionMenu(
-            left_opts,
-            values=["MP4", "MKV", "WebM", "Auto"],
-            fg_color=COLOR_BTN_SECONDARY,
-            button_color=COLOR_BTN_SECONDARY_HOVER,
-            button_hover_color=COLOR_ACCENT,
-            dropdown_fg_color=COLOR_CARD,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            height=32
-        )
-        self.container_menu.set("MP4")
-        self.container_menu.grid(row=1, column=1, sticky="ew", pady=6)
-
-        # Checkboxes (Right Column)
-        right_opts = ctk.CTkFrame(fmt_card, fg_color="transparent")
-        right_opts.grid(row=1, column=1, sticky="nsew", padx=14, pady=(0, 10))
-
-        self.chk_subtitles = ctk.CTkCheckBox(right_opts, text="Download Subtitles", font=ctk.CTkFont(family="Segoe UI", size=11), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, checkmark_color="#000")
-        self.chk_subtitles.select()
-        self.chk_subtitles.grid(row=0, column=0, sticky="w", pady=6)
-
-        self.chk_audio_only = ctk.CTkCheckBox(right_opts, text="Convert to Audio (MP3)", font=ctk.CTkFont(family="Segoe UI", size=11), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, checkmark_color="#000", command=self._on_mp3_toggle)
-        self.chk_audio_only.grid(row=0, column=1, sticky="w", padx=14, pady=6)
-
-        self.chk_metadata = ctk.CTkCheckBox(right_opts, text="Embed Metadata", font=ctk.CTkFont(family="Segoe UI", size=11), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, checkmark_color="#000")
-        self.chk_metadata.select()
-        self.chk_metadata.grid(row=1, column=0, sticky="w", pady=6)
-
-        self.chk_thumbnail = ctk.CTkCheckBox(right_opts, text="Download Thumbnail", font=ctk.CTkFont(family="Segoe UI", size=11), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, checkmark_color="#000")
-        self.chk_thumbnail.select()
-        self.chk_thumbnail.grid(row=1, column=1, sticky="w", padx=14, pady=6)
-
-        # --- SECTION 4: Downloads Queue / Status Table ---
-        queue_header_row = ctk.CTkFrame(parent, fg_color="transparent")
-        queue_header_row.grid(row=6, column=0, sticky="ew", pady=(0, 4))
-        queue_header_row.grid_columnconfigure(0, weight=1)
-
-        queue_title = ctk.CTkLabel(
-            queue_header_row,
-            text="Downloads Queue / Status",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        queue_title.grid(row=0, column=0, sticky="w")
-
-        # Table Column Headers
-        col_headers = ctk.CTkFrame(parent, fg_color="#0a0d14", height=28, corner_radius=6)
-        col_headers.grid(row=7, column=0, sticky="ew", pady=(0, 6))
-        col_headers.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(col_headers, text="  Status", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=65).grid(row=0, column=0, padx=6)
-        ctk.CTkLabel(col_headers, text="Title & Channel", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, anchor="w").grid(row=0, column=1, padx=6, sticky="w")
-        ctk.CTkLabel(col_headers, text="Progress", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=140).grid(row=0, column=2, padx=6)
-        ctk.CTkLabel(col_headers, text="File Size", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=110).grid(row=0, column=3, padx=6)
-        ctk.CTkLabel(col_headers, text="Speed", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=90).grid(row=0, column=4, padx=6)
-        ctk.CTkLabel(col_headers, text="ETA", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=80).grid(row=0, column=5, padx=6)
-        ctk.CTkLabel(col_headers, text="Actions", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_TEXT_SECONDARY, width=100).grid(row=0, column=6, padx=6)
-
-        # Scrollable Queue List
-        self.queue_scroll = ctk.CTkScrollableFrame(
-            parent,
-            fg_color=COLOR_CARD,
-            corner_radius=8,
-            border_width=1,
-            border_color=COLOR_CARD_BORDER
-        )
-        self.queue_scroll.grid(row=8, column=0, sticky="nsew", pady=(0, 10))
-        self.queue_scroll.grid_columnconfigure(1, weight=1)
-
-        # Empty state placeholder
-        self.queue_empty_lbl = ctk.CTkLabel(
-            self.queue_scroll,
-            text="No active downloads. Paste a video or stream URL above and click 'START DOWNLOAD'.",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=COLOR_TEXT_SECONDARY
-        )
-        self.queue_empty_lbl.pack(pady=32)
-
-        # --- SECTION 5: Bottom Action Bar & Status Footer ---
-        bottom_bar = ctk.CTkFrame(parent, fg_color="transparent")
-        bottom_bar.grid(row=9, column=0, sticky="ew", pady=(0, 2))
-        bottom_bar.grid_columnconfigure(0, weight=1)
-
-        self.status_msg_lbl = ctk.CTkLabel(
-            bottom_bar,
-            text="Ready • Standalone Engine loaded",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w"
-        )
-        self.status_msg_lbl.grid(row=0, column=0, sticky="w")
-
-        self.start_download_btn = ctk.CTkButton(
-            bottom_bar,
-            text="⬇   START DOWNLOAD",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            height=44,
-            width=220,
-            corner_radius=8,
-            fg_color=COLOR_ACCENT,
-            hover_color=COLOR_ACCENT_HOVER,
-            text_color="#000000",
-            command=self._on_start_download_click
-        )
-        self.start_download_btn.grid(row=0, column=1, sticky="e")
-
-        # Bottom Overall Throughput Footer
-        footer_strip = ctk.CTkFrame(parent, fg_color="transparent")
-        footer_strip.grid(row=10, column=0, sticky="ew", pady=(2, 0))
-        footer_strip.grid_columnconfigure(0, weight=1)
-
-        self.overall_speed_lbl = ctk.CTkLabel(
-            footer_strip,
-            text="Active Speed: -- • Remaining ETA: --",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="e"
-        )
-        self.overall_speed_lbl.grid(row=0, column=1, sticky="e")
-
-        return parent
-
-    # =========================================================================
-    # TAB 2: LIBRARY / HISTORY
-    # =========================================================================
-    def _build_library_tab(self) -> ctk.CTkFrame:
-        parent = ctk.CTkFrame(self.content_container, fg_color="transparent")
-        parent.grid_rowconfigure(2, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        # Top Bar
-        top_bar = ctk.CTkFrame(parent, fg_color="transparent")
-        top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        top_bar.grid_columnconfigure(1, weight=1)
-
-        title = ctk.CTkLabel(
-            top_bar,
-            text="📁 Downloaded Library & Recordings",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        title.grid(row=0, column=0, sticky="w", padx=(0, 16))
-
-        open_folder_btn = ctk.CTkButton(
-            top_bar,
-            text="📂 Open Downloads Folder",
-            height=34,
-            corner_radius=6,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=self._on_open_downloads_folder
-        )
-        open_folder_btn.grid(row=0, column=2, sticky="e")
-
-        # Search Bar
-        self.lib_search_entry = ctk.CTkEntry(
-            parent,
-            placeholder_text="🔍 Search library by title or link...",
-            height=36,
-            corner_radius=8,
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER
-        )
-        self.lib_search_entry.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        self.lib_search_entry.bind("<KeyRelease>", lambda e: self._refresh_library_list())
-
-        # History Scroll Area
-        self.library_scroll = ctk.CTkScrollableFrame(
-            parent,
-            fg_color=COLOR_CARD,
-            corner_radius=8,
-            border_width=1,
-            border_color=COLOR_CARD_BORDER
-        )
-        self.library_scroll.grid(row=2, column=0, sticky="nsew")
-        self.library_scroll.grid_columnconfigure(1, weight=1)
-
-        return parent
-
-    def _refresh_library_list(self):
-        """Populates the history list with interactive cards."""
-        for w in self.library_scroll.winfo_children():
-            w.destroy()
-
-        history = get_history()
-        query = self.lib_search_entry.get().strip().lower() if hasattr(self, "lib_search_entry") else ""
-        filtered = [h for h in history if not query or query in h.get("title", "").lower() or query in h.get("stream_url", "").lower()]
-
-        if not filtered:
-            empty = ctk.CTkLabel(
-                self.library_scroll,
-                text="No downloaded items found." if not query else f"No items matching '{query}'.",
-                font=ctk.CTkFont(family="Segoe UI", size=12),
-                text_color=COLOR_TEXT_SECONDARY
-            )
-            empty.pack(pady=40)
+                headers = {
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Referer": target_url,
+                    "Origin": f"{urllib.parse.urlsplit(target_url).scheme}://{urllib.parse.urlsplit(target_url).netloc}"
+                }
+                custom_hdr_raw = query.get("headers", [None])[0]
+                if custom_hdr_raw:
+                    try:
+                        headers.update(json.loads(custom_hdr_raw))
+                    except Exception:
+                        pass
+
+                req = urllib.request.Request(target_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw_content = resp.read().decode('utf-8', errors='ignore')
+
+                # Rewrite child variant and chunk links through our local proxy
+                rewritten_lines = []
+                for line in raw_content.splitlines():
+                    sline = line.strip()
+                    if sline and not sline.startswith('#'):
+                        abs_url = urllib.parse.urljoin(target_url, sline)
+                        if '.m3u8' in abs_url or 'pull-hls' in abs_url:
+                            rewritten_lines.append(f"/api/proxy_hls?url={urllib.parse.quote(abs_url)}")
+                        else:
+                            rewritten_lines.append(f"/api/proxy_chunk?url={urllib.parse.quote(abs_url)}")
+                    else:
+                        rewritten_lines.append(line)
+
+                body = "\n".join(rewritten_lines).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_error(502, f"HLS Proxy Error: {e}")
             return
 
-        for idx, item in enumerate(reversed(filtered)):
-            card = ctk.CTkFrame(self.library_scroll, fg_color=COLOR_INPUT_BG, corner_radius=6)
-            card.pack(fill="x", padx=6, pady=4)
-            card.grid_columnconfigure(1, weight=1)
+        # 3. Media Chunk Proxy (Streams video chunks with CORS headers)
+        if parsed.path == "/api/proxy_chunk":
+            query = urllib.parse.parse_qs(parsed.query)
+            target_url = query.get("url", [None])[0]
+            if not target_url:
+                self.send_error(400, "Missing url parameter")
+                return
 
-            # Icon
-            is_audio = item.get("media_type") == "audio"
-            icon_text = "🎵" if is_audio else ("🔴" if "live" in item.get("media_type", "") else "🎬")
-            ctk.CTkLabel(card, text=icon_text, font=ctk.CTkFont(size=18), width=36).grid(row=0, column=0, rowspan=2, padx=10, pady=8)
+            try:
+                req = urllib.request.Request(target_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    c_type = resp.headers.get("Content-Type", "video/MP2T")
+                    self.send_response(200)
+                    self.send_header("Content-Type", c_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    shutil.copyfileobj(resp, self.wfile)
+            except Exception as e:
+                self.send_error(502, f"Chunk Proxy Error: {e}")
+            return
 
-            # Title & Meta
-            title_txt = item.get("title") or "Downloaded Media"
-            ctk.CTkLabel(
-                card,
-                text=title_txt,
-                font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-                text_color=COLOR_TEXT_PRIMARY,
-                anchor="w"
-            ).grid(row=0, column=1, sticky="w", pady=(8, 2))
+        # 4. Main Application HTML
+        if parsed.path in ["/", "/index.html"]:
+            html_content = generate_studio_html()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(html_content.encode("utf-8"))
+            return
 
-            meta_txt = f"{item.get('media_type', 'video').upper()} • {item.get('timestamp', '')[:16]} • {item.get('filename', '')}"
-            ctk.CTkLabel(
-                card,
-                text=meta_txt,
-                font=ctk.CTkFont(family="Segoe UI", size=10),
-                text_color=COLOR_TEXT_SECONDARY,
-                anchor="w"
-            ).grid(row=1, column=1, sticky="w", pady=(0, 8))
+        self.send_error(404, "Not Found")
 
-            # Action Buttons
-            btn_box = ctk.CTkFrame(card, fg_color="transparent")
-            btn_box.grid(row=0, column=2, rowspan=2, padx=10)
 
-            fpath = item.get("filename")
-            if fpath and Path(fpath).exists():
-                play_btn = ctk.CTkButton(
-                    btn_box,
-                    text="▶ Play",
-                    width=60,
-                    height=28,
-                    corner_radius=6,
-                    fg_color=COLOR_ACCENT,
-                    hover_color=COLOR_ACCENT_HOVER,
-                    text_color="#000",
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    command=lambda p=fpath: self._play_file(p)
-                )
-                play_btn.pack(side="left", padx=4)
+# =============================================================================
+# NATIVE PYTHON <-> JAVASCRIPT BIDIRECTIONAL API BRIDGE
+# =============================================================================
 
-            open_btn = ctk.CTkButton(
-                btn_box,
-                text="📁 Open",
-                width=60,
-                height=28,
-                corner_radius=6,
-                fg_color=COLOR_BTN_SECONDARY,
-                hover_color=COLOR_BTN_SECONDARY_HOVER,
-                font=ctk.CTkFont(size=11),
-                command=lambda p=fpath: self._open_file_in_folder(p)
-            )
-            open_btn.pack(side="left", padx=4)
+class StreamVortexApi:
+    """
+    Exposed directly to window.pywebview.api in JavaScript.
+    Handles all interactions: URL resolution, file dialogs, downloads, batch queues,
+    container repairs, history, watchlist, and settings.
+    """
+    def __init__(self, port: int):
+        self.port = port
+        self._window = None
 
-    # =========================================================================
-    # TAB 3: BATCH MODE
-    # =========================================================================
-    def _build_batch_tab(self) -> ctk.CTkFrame:
-        parent = ctk.CTkFrame(self.content_container, fg_color="transparent")
-        parent.grid_rowconfigure(2, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
+    def set_window(self, window):
+        self._window = window
 
-        title = ctk.CTkLabel(
-            parent,
-            text="📦 Batch URL Downloader",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        title.grid(row=0, column=0, sticky="w", pady=(0, 6))
+    def get_initial_state(self) -> Dict[str, Any]:
+        """Provides all configuration and system info on app initialization."""
+        conf = find_ytdlp_conf()
+        conf_name = conf.name if conf else "Default"
+        dl_dir = str(get_conf_download_dir(conf))
+        ytdlp_cmd = find_ytdlp()
+        ytdlp_str = " ".join(ytdlp_cmd) if isinstance(ytdlp_cmd, list) else str(ytdlp_cmd)
+        ffmpeg_bin = find_ffmpeg()
+        has_space, free_gb = check_free_disk_space()
 
-        desc = ctk.CTkLabel(
-            parent,
-            text="Paste multiple video, stream, or audio URLs (one URL per line) to queue and download them sequentially.",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY
-        )
-        desc.grid(row=1, column=0, sticky="w", pady=(0, 10))
+        return {
+            "config": get_config(),
+            "download_dir": dl_dir,
+            "active_conf": conf_name,
+            "ytdlp_path": ytdlp_str,
+            "ffmpeg_path": ffmpeg_bin or "Missing",
+            "ffmpeg_ready": bool(ffmpeg_bin),
+            "free_disk_gb": round(free_gb, 1),
+            "has_disk_space": has_space,
+            "history": get_history(),
+            "watchlist": get_watchlist(),
+            "active_jobs": DOWNLOAD_MANAGER.get_active_jobs(),
+            "server_port": self.port
+        }
 
-        self.batch_textbox = ctk.CTkTextbox(
-            parent,
-            font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color=COLOR_CARD,
-            border_width=1,
-            border_color=COLOR_CARD_BORDER
-        )
-        self.batch_textbox.grid(row=2, column=0, sticky="nsew", pady=(0, 14))
+    def resolve_url(self, url: str) -> Dict[str, Any]:
+        """
+        Analyzes a URL using multi-tier resolvers.
+        Discovers titles, platform metadata, and multi-bitrate formats.
+        """
+        clean_url = clean_target_url(url.strip())
+        if not clean_url:
+            return {"error": "Please enter a valid URL."}
 
-        # Bottom Batch Actions
-        b_bar = ctk.CTkFrame(parent, fg_color="transparent")
-        b_bar.grid(row=3, column=0, sticky="ew")
-        b_bar.grid_columnconfigure(0, weight=1)
-
-        self.batch_status_lbl = ctk.CTkLabel(
-            b_bar,
-            text="Ready to queue links.",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY
-        )
-        self.batch_status_lbl.grid(row=0, column=0, sticky="w")
-
-        add_batch_btn = ctk.CTkButton(
-            b_bar,
-            text="⬇   Add All to Downloads Queue",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-            height=40,
-            width=230,
-            corner_radius=8,
-            fg_color=COLOR_ACCENT,
-            hover_color=COLOR_ACCENT_HOVER,
-            text_color="#000",
-            command=self._on_queue_batch_click
-        )
-        add_batch_btn.grid(row=0, column=1, sticky="e")
-
-        return parent
-
-    # =========================================================================
-    # TAB 4: SETTINGS & TOOLS
-    # =========================================================================
-    def _build_settings_tab(self) -> ctk.CTkFrame:
-        parent = ctk.CTkFrame(self.content_container, fg_color="transparent")
-        parent.grid_columnconfigure(0, weight=1)
-
-        title = ctk.CTkLabel(
-            parent,
-            text="⚙ Settings & Toolchain Orchestration",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        title.pack(anchor="w", pady=(0, 16))
-
-        # Card 1: 1-Click Automated Setup Wizard
-        card_setup = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card_setup.pack(fill="x", pady=(0, 14))
-        card_setup.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            card_setup,
-            text="⚡ 1-Click Automated Tools Setup",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
-
-        ctk.CTkLabel(
-            card_setup,
-            text="Installs and configures official yt-dlp, FFmpeg, and optimized configuration into C:\\Tools automatically.",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY
-        ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
-
-        setup_btn = ctk.CTkButton(
-            card_setup,
-            text="Run 1-Click Setup Wizard",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
-            height=34,
-            corner_radius=6,
-            fg_color=COLOR_SUCCESS,
-            hover_color="#059669",
-            command=self._on_launch_setup_wizard
-        )
-        setup_btn.grid(row=0, column=1, rowspan=2, padx=14, pady=12, sticky="e")
-
-        # Card 2: yt-dlp.conf Configuration
-        card_conf = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card_conf.pack(fill="x", pady=(0, 14))
-        card_conf.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            card_conf,
-            text="📄 Global Configuration (yt-dlp.conf)",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
-
-        active_conf = find_ytdlp_conf()
-        conf_str = str(active_conf) if active_conf else "No custom .conf found (Using StreamVortex Embedded Engine)"
-        self.conf_path_lbl = ctk.CTkLabel(
-            card_conf,
-            text=f"Active Path: {conf_str}",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY
-        )
-        self.conf_path_lbl.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
-
-        open_conf_btn = ctk.CTkButton(
-            card_conf,
-            text="Open in Notepad",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            height=34,
-            corner_radius=6,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=self._on_open_conf_file
-        )
-        open_conf_btn.grid(row=0, column=1, rowspan=2, padx=14, pady=12, sticky="e")
-
-        # Card 3: System Diagnostics & Web Studio
-        card_diag = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card_diag.pack(fill="x", pady=(0, 14))
-        card_diag.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            card_diag,
-            text="🩺 Diagnostics & Alternative Studios",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
-
-        ctk.CTkLabel(
-            card_diag,
-            text="Run comprehensive diagnostic health check or launch the Browser-based Web Studio.",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY
-        ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
-
-        btn_group = ctk.CTkFrame(card_diag, fg_color="transparent")
-        btn_group.grid(row=0, column=1, rowspan=2, padx=14, pady=12, sticky="e")
-
-        doc_btn = ctk.CTkButton(
-            btn_group,
-            text="Run Doctor Check",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            height=34,
-            corner_radius=6,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=self._on_run_doctor
-        )
-        doc_btn.pack(side="left", padx=4)
-
-        web_btn = ctk.CTkButton(
-            btn_group,
-            text="🌐 Open Web Studio",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            height=34,
-            corner_radius=6,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=self._on_open_web_studio
-        )
-        web_btn.pack(side="left", padx=4)
-
-        return parent
-
-    # =========================================================================
-    # TAB 5: ABOUT VIEW
-    # =========================================================================
-    def _build_about_tab(self) -> ctk.CTkFrame:
-        parent = ctk.CTkFrame(self.content_container, fg_color="transparent")
-        parent.pack_propagate(False)
-
-        card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=12, border_width=1, border_color=COLOR_CARD_BORDER)
-        card.pack(fill="both", expand=True, padx=20, pady=20)
-
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.place(relx=0.5, rely=0.5, anchor="center")
-
-        if hasattr(self, "img_app_logo_large") and self.img_app_logo_large:
-            logo_l = ctk.CTkLabel(inner, image=self.img_app_logo_large, text="")
-            logo_l.pack(pady=(0, 14))
-
-        app_title = ctk.CTkLabel(
-            inner,
-            text="StreamVortex",
-            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        app_title.pack()
-
-        app_sub = ctk.CTkLabel(
-            inner,
-            text="v1.1 // Standalone Desktop Studio Edition",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=COLOR_ACCENT
-        )
-        app_sub.pack(pady=(2, 12))
-
-        app_desc = ctk.CTkLabel(
-            inner,
-            text=(
-                "Resilient HLS/DASH/VOD stream intelligence & live watchdog engine powered by yt-dlp.\n"
-                "Features smart quality overrides (unconstrained 4K/2K), zero-setup auto-deployed .conf,\n"
-                "fault-tolerant live recording with FFmpeg +faststart, and broken file auto-cleaning."
-            ),
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLOR_TEXT_SECONDARY,
-            justify="center"
-        )
-        app_desc.pack(pady=(0, 18))
-
-        github_btn = ctk.CTkButton(
-            inner,
-            text="⭐ GitHub: BMQ-1 / StreamVortex",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
-            height=36,
-            corner_radius=8,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=lambda: os.system("start https://github.com/BMQ-1/StreamVortex") if sys.platform == "win32" else None
-        )
-        github_btn.pack()
-
-        return parent
-
-    # =========================================================================
-    # CORE USER ACTIONS & INTERACTIONS
-    # =========================================================================
-    def _on_paste_click(self):
-        """Pastes URL from clipboard and triggers auto-analysis."""
         try:
-            txt = self.root.clipboard_get().strip()
-            if txt:
-                self.url_entry.delete(0, "end")
-                self.url_entry.insert(0, txt)
-                self._on_analyze_click()
-        except Exception:
-            pass
-
-    def _on_browse_folder_click(self):
-        """Opens folder dialog and persists selection to yt-dlp.conf."""
-        from tkinter import filedialog
-        cur_dir = self.folder_entry.get().strip()
-        chosen = filedialog.askdirectory(initialdir=cur_dir, title="Select Download Destination Folder")
-        if chosen:
-            self.folder_entry.delete(0, "end")
-            self.folder_entry.insert(0, chosen)
-            self._on_folder_change()
-
-    def _on_folder_change(self):
-        """Saves folder change to yt-dlp.conf and config.json."""
-        target = self.folder_entry.get().strip()
-        if target:
-            p = Path(target)
-            if p.exists():
-                ok, msg = update_ytdlp_conf_destinations(p)
-                if ok:
-                    self.status_msg_lbl.configure(text=f"✓ Destination saved: {p}", text_color=COLOR_SUCCESS)
-                    self._update_disk_space_display(p)
+            # 1. Resolve with universal engine
+            meta = resolve_stream_metadata(clean_url, timeout=12)
+            if meta and meta.get("formats"):
+                direct_url = meta.get("direct_url") or meta["formats"][0].get("url")
+                # Attach CORS proxy URL for live HLS streams so player never fails
+                if direct_url and (".m3u8" in direct_url or "pull-hls" in direct_url):
+                    meta["preview_url"] = f"http://127.0.0.1:{self.port}/api/proxy_hls?url={urllib.parse.quote(direct_url)}"
                 else:
-                    self.status_msg_lbl.configure(text=f"Error saving conf: {msg}", text_color=COLOR_DANGER)
+                    meta["preview_url"] = direct_url
+                return meta
 
-    def _on_open_downloads_folder(self):
-        """Opens current download directory in Explorer."""
-        target = self.folder_entry.get().strip() or str(get_conf_download_dir())
-        p = Path(target)
+            # 2. Fallback to smart sniffer
+            sniffed = smart_sniff(clean_url, timeout=12)
+            if sniffed and sniffed.url:
+                is_hls = sniffed.stream_type == "hls"
+                preview_url = f"http://127.0.0.1:{self.port}/api/proxy_hls?url={urllib.parse.quote(sniffed.url)}" if is_hls else sniffed.url
+                return {
+                    "id": clean_url,
+                    "title": sniffed.page_title or "Discovered Web Stream",
+                    "uploader": "",
+                    "is_live": sniffed.stream_type in ("hls", "flv"),
+                    "platform": detect_platform(clean_url),
+                    "direct_url": sniffed.url,
+                    "preview_url": preview_url,
+                    "formats": [
+                        {
+                            "id": f"{sniffed.stream_type}-main",
+                            "url": sniffed.url,
+                            "protocol": "m3u8_native" if is_hls else "https",
+                            "ext": "mp4" if is_hls else sniffed.stream_type
+                        }
+                    ]
+                }
+
+            return {"error": "No media stream detected on page or channel is offline."}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def start_download(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        """Starts a download job in the background and tracks it in DOWNLOAD_MANAGER."""
+        url = options.get("url", "").strip()
+        if not url:
+            return {"error": "No URL provided"}
+
+        title = options.get("title") or "stream"
+        uploader = options.get("uploader") or ""
+        is_live = bool(options.get("is_live", False))
+        quality = options.get("quality", "max")
+        audio_only = bool(options.get("audio_only", False)) or quality.startswith("audio_")
+        container = options.get("container", "mp4")
+        custom_folder = options.get("folder")
+
+        job_id = f"job-{int(time.time() * 1000)}"
+        DOWNLOAD_MANAGER.start_job(job_id, title, url, is_live=is_live)
+
+        def _worker():
+            try:
+                run_ytdlp_download(
+                    stream_url=url,
+                    audio_only=audio_only,
+                    is_live=is_live,
+                    quality_preference=quality,
+                    title=title,
+                    uploader=uploader,
+                    job_id=job_id,
+                    respect_conf_output=True if not custom_folder else False,
+                    output_filename=None if not custom_folder else str(Path(custom_folder) / f"{title}.{container}")
+                )
+            except Exception as e:
+                DOWNLOAD_MANAGER.finish_job(job_id, success=False, error=str(e))
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return {"status": "started", "job_id": job_id}
+
+    def batch_download(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        """Queues multiple URLs for sequential download."""
+        urls = options.get("urls", [])
+        quality = options.get("quality", "max")
+        audio_only = bool(options.get("audio_only", False)) or quality.startswith("audio_")
+
+        valid_urls = [u.strip() for u in urls if u.strip().startswith("http")]
+        if not valid_urls:
+            return {"error": "No valid URLs provided"}
+
+        def _batch_worker():
+            for u in valid_urls:
+                try:
+                    meta = resolve_stream_metadata(u, timeout=8)
+                    title = meta.get("title") if meta else None
+                    uploader = meta.get("uploader") if meta else None
+                    is_live = meta.get("is_live", False) if meta else False
+                    job_id = f"batch-{int(time.time() * 1000)}"
+                    DOWNLOAD_MANAGER.start_job(job_id, title or u, u, is_live=is_live)
+                    run_ytdlp_download(
+                        stream_url=u,
+                        audio_only=audio_only,
+                        is_live=is_live,
+                        quality_preference=quality,
+                        title=title,
+                        uploader=uploader,
+                        job_id=job_id
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=_batch_worker, daemon=True).start()
+        return {"status": "queued", "count": len(valid_urls)}
+
+    def get_active_jobs(self) -> List[Dict[str, Any]]:
+        """Returns the list of running and recent download tasks."""
+        return DOWNLOAD_MANAGER.get_active_jobs()
+
+    def clear_completed_jobs(self) -> Dict[str, Any]:
+        """Clears completed or failed jobs from the active queue."""
+        DOWNLOAD_MANAGER.clear_completed()
+        return {"status": "cleared", "active_jobs": DOWNLOAD_MANAGER.get_active_jobs()}
+
+    def stop_job(self, job_id: str) -> Dict[str, Any]:
+        """Gracefully stops a live recording and finalizes its container."""
+        success = DOWNLOAD_MANAGER.stop_job(job_id)
+        return {"status": "stopped" if success else "not_found"}
+
+    def select_folder(self) -> Dict[str, Any]:
+        """Opens native Windows folder picker dialog and updates yt-dlp.conf."""
+        if self._window:
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            if result and len(result) > 0:
+                picked = result[0]
+                # Sync with yt-dlp.conf
+                conf = find_ytdlp_conf()
+                if conf:
+                    update_ytdlp_conf_destinations(Path(picked), conf_path=conf)
+                return {"folder": picked}
+        return {"cancelled": True}
+
+    def select_file(self, file_types: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Opens native Windows file picker dialog."""
+        if self._window:
+            types = tuple(file_types) if file_types else ('Video Files (*.mp4;*.ts;*.flv;*.mkv;*.part)', 'All Files (*.*)')
+            result = self._window.create_file_dialog(webview.OPEN_DIALOG, file_types=types)
+            if result and len(result) > 0:
+                return {"file": result[0]}
+        return {"cancelled": True}
+
+    def open_folder(self, folder_path: Optional[str] = None) -> Dict[str, Any]:
+        """Opens target folder in Windows Explorer."""
+        target = Path(folder_path) if folder_path else get_conf_download_dir()
+        if target.exists():
+            if sys.platform == "win32":
+                os.startfile(str(target))
+            else:
+                subprocess.run(["xdg-open", str(target)])
+            return {"status": "opened", "path": str(target)}
+        return {"error": "Folder does not exist"}
+
+    def open_file(self, file_path: str) -> Dict[str, Any]:
+        """Opens media file in default system player or highlights it in Explorer."""
+        p = Path(file_path)
         if p.exists():
             if sys.platform == "win32":
                 os.startfile(str(p))
             else:
                 subprocess.run(["xdg-open", str(p)])
+            return {"status": "opened"}
+        return {"error": "File does not exist"}
 
-    def _on_mp3_toggle(self):
-        """When MP3 toggle is checked, adjusts format selection."""
-        if self.chk_audio_only.get():
-            self.container_menu.set("MP3")
-        else:
-            self.container_menu.set("MP4")
+    def play_in_external_player(self, target_url: str) -> Dict[str, Any]:
+        """Plays stream or media file in MPV or VLC."""
+        ok, desc = play_media_target(target_url)
+        return {"success": ok, "message": desc}
 
-    def _on_analyze_click(self):
-        """Analyzes entered URL in background and prepares preview card."""
-        url = self.url_entry.get().strip()
-        if not url:
-            self.status_msg_lbl.configure(text="Please enter a stream or video URL.", text_color=COLOR_WARNING)
-            return
+    def get_history(self) -> List[Dict[str, Any]]:
+        """Returns downloaded media history."""
+        return get_history()
 
-        self.status_msg_lbl.configure(text="🔍 Analyzing stream metadata with yt-dlp...", text_color=COLOR_ACCENT)
-        self.analyze_btn.configure(state="disabled", text="Analyzing...")
+    def clear_history(self) -> Dict[str, Any]:
+        """Clears media history."""
+        save_config("history", [])
+        return {"status": "cleared"}
 
-        def _worker():
-            meta = resolve_stream_metadata(url)
-            self.analyzed_metadata = meta
-            title = meta.get("title") or "Media Stream"
-            uploader = meta.get("uploader") or "Unknown Creator"
-            is_live = meta.get("is_live", False)
-            duration_sec = meta.get("duration", 0)
+    def get_watchlist(self) -> List[str]:
+        """Returns monitored creator watchlist."""
+        return get_watchlist()
 
-            dur_str = f"{int(duration_sec // 60)}:{int(duration_sec % 60):02d}" if duration_sec else "Live / Stream"
+    def add_to_watchlist(self, creator: str) -> Dict[str, Any]:
+        """Adds a creator to the live watchdog."""
+        c = creator.strip().lstrip("@")
+        if c:
+            add_to_watchlist(c)
+        return {"watchlist": get_watchlist()}
 
-            def _update_ui():
-                self.analyze_btn.configure(state="normal", text="⚡  Analyze")
-                self.preview_card.grid()  # Show card
-                self.prev_icon_lbl.configure(text="🔴" if is_live else "🎬")
-                self.prev_title_lbl.configure(text=title if len(title) <= 65 else f"{title[:62]}...")
-                self.prev_meta_lbl.configure(text=f"@{uploader} • Duration: {dur_str} • Auto-Detected Best Format")
-                self.prev_badge_lbl.configure(
-                    text="LIVE NOW" if is_live else "READY",
-                    text_color=COLOR_DANGER if is_live else COLOR_SUCCESS
-                )
-                self.status_msg_lbl.configure(
-                    text=f"✓ Ready: '{title}' by @{uploader}",
-                    text_color=COLOR_SUCCESS
-                )
+    def remove_from_watchlist(self, creator: str) -> Dict[str, Any]:
+        """Removes a creator from the watchlist."""
+        c = creator.strip().lstrip("@")
+        if c:
+            remove_from_watchlist(c)
+        return {"watchlist": get_watchlist()}
 
-            self.root.after(0, _update_ui)
+    def check_creator_live(self, creator: str) -> Dict[str, Any]:
+        """Checks if a creator is currently live."""
+        c = creator.strip().lstrip("@")
+        res = resolve_tiktok_live_fast(c) or resolve_tiktok_live(c, timeout=6)
+        if res and res.is_live and res.formats:
+            return {
+                "is_live": True,
+                "title": res.title,
+                "stream_url": res.formats[0].url,
+                "uploader": res.uploader
+            }
+        return {"is_live": False, "uploader": c}
 
-        threading.Thread(target=_worker, daemon=True).start()
+    def inspect_container(self, file_path: str) -> Dict[str, Any]:
+        """Inspects magic bytes of a media file to detect actual container."""
+        p = Path(file_path.strip().strip('"\''))
+        if not p.exists():
+            return {"error": "File does not exist"}
+        have = sniff_container(p)
+        ext = p.suffix.lstrip(".").lower()
+        size_mb = round(p.stat().st_size / (1024 * 1024), 2)
+        is_flv = (have == "flv" or ext == "flv")
+        is_part = (ext == "part")
+        is_ts_mismatch = (have == "mpegts" and ext != "ts")
+        is_mismatched = is_flv or is_part or is_ts_mismatch or (have and ext not in (have, "part") and not (ext == "mp4" and have == "mp4"))
 
-    def _on_start_download_click(self):
-        """Starts downloading the analyzed or entered URL."""
-        url = self.url_entry.get().strip()
-        if not url:
-            self.status_msg_lbl.configure(text="Please enter a valid URL.", text_color=COLOR_WARNING)
-            return
+        detected_str = have or "Unknown"
+        if is_flv:
+            detected_str = f"{have or 'flv'} (FLV Video)"
 
-        job_id = f"job-{int(time.time() * 1000)}"
-        meta = self.analyzed_metadata or resolve_stream_metadata(url)
-        title = meta.get("title") or "Media Download"
-        uploader = meta.get("uploader") or ""
-        is_live = meta.get("is_live", False)
-        is_audio = bool(self.chk_audio_only.get())
-
-        # Quality preference mapping
-        q_choice = self.quality_menu.get()
-        if "Best" in q_choice:
-            q_code = "max"
-        elif "1080p" in q_choice:
-            q_code = "1080p"
-        elif "720p" in q_choice:
-            q_code = "720p"
-        elif "480p" in q_choice:
-            q_code = "480p"
-        else:
-            q_code = "conf"
-
-        if is_audio:
-            q_code = "audio_mp3"
-
-        row = self._add_or_update_queue_row(
-            job_id=job_id,
-            title=title,
-            uploader=uploader,
-            url=url,
-            is_live=is_live,
-            status="Starting...",
-            progress_pct=0.0
-        )
-
-        self.status_msg_lbl.configure(text=f"⬇ Downloading '{title}'...", text_color=COLOR_ACCENT)
-
-        def _worker():
-            def on_prog(pct, speed, eta):
-                def _ui():
-                    status_text = "🔴 RECORDING" if (is_live and pct is None) else "Downloading"
-                    prog_val = 0.5 if pct is None else (pct / 100.0)
-                    row["progress_bar"].set(prog_val)
-                    pct_str = "--" if pct is None else f"{pct:.1f}%"
-                    row["progress_lbl"].configure(text=pct_str)
-                    row["speed_lbl"].configure(text=speed or "--")
-                    row["eta_lbl"].configure(text=f"{eta}" if eta else "--")
-                    self.overall_speed_lbl.configure(text=f"Active Speed: {speed or '--'} • Remaining ETA: {eta or '--'}")
-                self.root.after(0, _ui)
-
-            ret = run_ytdlp_download(
-                stream_url=url,
-                title=title,
-                uploader=uploader,
-                is_live=is_live,
-                audio_only=is_audio,
-                quality_preference=q_code,
-                progress_callback=on_prog,
-                respect_conf_output=True
-            )
-
-            def _finish():
-                if ret == 0:
-                    row["progress_bar"].set(1.0)
-                    row["progress_lbl"].configure(text="100%", text_color=COLOR_SUCCESS)
-                    row["status_badge"].configure(text="DONE", text_color=COLOR_SUCCESS)
-                    row["speed_lbl"].configure(text="Complete")
-                    row["eta_lbl"].configure(text="--")
-                    if "play_btn" in row:
-                        row["play_btn"].configure(state="normal")
-                    if "open_btn" in row:
-                        row["open_btn"].configure(state="normal")
-                    self.status_msg_lbl.configure(text=f"✅ Finished: '{title}' saved to {get_conf_download_dir()}", text_color=COLOR_SUCCESS)
-                else:
-                    row["status_badge"].configure(text="FAILED", text_color=COLOR_DANGER)
-                    self.status_msg_lbl.configure(text=f"❌ Download failed for '{title}'.", text_color=COLOR_DANGER)
-                self.overall_speed_lbl.configure(text="Active Speed: -- • Remaining ETA: --")
-
-            self.root.after(0, _finish)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _on_queue_batch_click(self):
-        """Processes all URLs in the Batch text box."""
-        raw = self.batch_textbox.get("1.0", "end").strip()
-        urls = [u.strip() for u in raw.splitlines() if u.strip() and u.strip().startswith("http")]
-        if not urls:
-            self.batch_status_lbl.configure(text="No valid URLs found in input.", text_color=COLOR_WARNING)
-            return
-
-        self.batch_status_lbl.configure(text=f"Queuing {len(urls)} items into Downloads...", text_color=COLOR_ACCENT)
-        self._switch_tab("downloads")
-
-        for u in urls:
-            self.url_entry.delete(0, "end")
-            self.url_entry.insert(0, u)
-            self._on_start_download_click()
-            time.sleep(0.3)
-
-    # =========================================================================
-    # QUEUE ROW BUILDER
-    # =========================================================================
-    def _add_or_update_queue_row(
-        self,
-        job_id: str,
-        title: str,
-        uploader: str,
-        url: str,
-        is_live: bool,
-        status: str,
-        progress_pct: float
-    ) -> Dict[str, Any]:
-        """Creates or updates a clean card in the Downloads Queue list."""
-        if hasattr(self, "queue_empty_lbl") and self.queue_empty_lbl.winfo_exists():
-            self.queue_empty_lbl.destroy()
-
-        card = ctk.CTkFrame(self.queue_scroll, fg_color=COLOR_INPUT_BG, corner_radius=6, height=52)
-        card.pack(fill="x", padx=4, pady=3)
-        card.grid_columnconfigure(1, weight=1)
-
-        # Status badge / indicator
-        badge_color = COLOR_DANGER if is_live else COLOR_ACCENT
-        status_badge = ctk.CTkLabel(
-            card,
-            text="🔴 LIVE" if is_live else "QUEUED",
-            font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
-            text_color=badge_color,
-            width=65
-        )
-        status_badge.grid(row=0, column=0, padx=6, pady=8)
-
-        # Title & Uploader
-        display_title = title if len(title) <= 50 else f"{title[:47]}..."
-        creator_tag = f" • @{uploader}" if uploader else ""
-        title_box = ctk.CTkFrame(card, fg_color="transparent")
-        title_box.grid(row=0, column=1, sticky="w", padx=6)
-
-        t_lbl = ctk.CTkLabel(
-            title_box,
-            text=f"{display_title}{creator_tag}",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
-        )
-        t_lbl.pack(anchor="w")
-
-        # Progress bar + Label
-        prog_frame = ctk.CTkFrame(card, fg_color="transparent", width=140)
-        prog_frame.grid(row=0, column=2, padx=6)
-
-        prog_bar = ctk.CTkProgressBar(
-            prog_frame,
-            width=90,
-            height=8,
-            corner_radius=4,
-            progress_color=COLOR_ACCENT,
-            fg_color="#1d263b"
-        )
-        prog_bar.set(progress_pct / 100.0)
-        prog_bar.pack(side="left", padx=(0, 6))
-
-        prog_lbl = ctk.CTkLabel(
-            prog_frame,
-            text=f"{progress_pct:.0f}%",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY,
-            width=36
-        )
-        prog_lbl.pack(side="left")
-
-        # Size
-        size_lbl = ctk.CTkLabel(
-            card,
-            text="--",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY,
-            width=110
-        )
-        size_lbl.grid(row=0, column=3, padx=6)
-
-        # Speed
-        speed_lbl = ctk.CTkLabel(
-            card,
-            text="--",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY,
-            width=90
-        )
-        speed_lbl.grid(row=0, column=4, padx=6)
-
-        # ETA
-        eta_lbl = ctk.CTkLabel(
-            card,
-            text="--",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLOR_TEXT_SECONDARY,
-            width=80
-        )
-        eta_lbl.grid(row=0, column=5, padx=6)
-
-        # Row Action Buttons (Open Folder / Play)
-        act_box = ctk.CTkFrame(card, fg_color="transparent", width=100)
-        act_box.grid(row=0, column=6, padx=6)
-
-        open_btn = ctk.CTkButton(
-            act_box,
-            text="📁",
-            width=30,
-            height=26,
-            corner_radius=4,
-            fg_color=COLOR_BTN_SECONDARY,
-            hover_color=COLOR_BTN_SECONDARY_HOVER,
-            command=self._on_open_downloads_folder
-        )
-        open_btn.pack(side="left", padx=2)
-
-        row_data = {
-            "job_id": job_id,
-            "card": card,
-            "status_badge": status_badge,
-            "title_lbl": t_lbl,
-            "progress_bar": prog_bar,
-            "progress_lbl": prog_lbl,
-            "size_lbl": size_lbl,
-            "speed_lbl": speed_lbl,
-            "eta_lbl": eta_lbl,
-            "open_btn": open_btn,
+        return {
+            "path": str(p),
+            "filename": p.name,
+            "size_mb": size_mb,
+            "extension": ext,
+            "detected_container": detected_str,
+            "is_mismatched": bool(is_mismatched),
+            "status_label": "LEGACY FLV (REPAIR TO PLAYABLE MP4/MKV)" if is_flv else ("CONTAINER MISMATCH (REPAIR NEEDED)" if is_mismatched else "CONTAINER CLEAN")
         }
-        self.active_jobs.append(row_data)
-        return row_data
 
-    # =========================================================================
-    # ACTIONS & UTILITIES
-    # =========================================================================
-    def _play_file(self, filepath: str):
-        """Launches downloaded media file in default system player."""
-        if filepath and Path(filepath).exists():
-            if sys.platform == "win32":
-                os.startfile(filepath)
-            else:
-                subprocess.run(["xdg-open", filepath])
+    def repair_container(self, file_path: str) -> Dict[str, Any]:
+        """Losslessly remuxes broken/mismatched video into clean MP4 with faststart."""
+        p = Path(file_path.strip().strip('"\''))
+        if not p.exists():
+            return {"error": "File does not exist"}
+        fixed = fixup_recorded_file(p)
+        return {
+            "status": "repaired",
+            "original_path": str(p),
+            "repaired_path": str(fixed),
+            "repaired_name": fixed.name
+        }
 
-    def _open_file_in_folder(self, filepath: str):
-        """Reveals file in Windows Explorer or file manager."""
-        if filepath:
-            p = Path(filepath)
-            if sys.platform == "win32" and p.exists():
-                subprocess.run(["explorer", f"/select,{p}"])
-            elif p.parent.exists():
-                if sys.platform == "win32":
-                    os.startfile(str(p.parent))
-                else:
-                    subprocess.run(["xdg-open", str(p.parent)])
+    def get_system_health(self) -> Dict[str, Any]:
+        """Runs diagnostics check for yt-dlp, FFmpeg, Python, and storage."""
+        return check_environment_status()
 
-    def _on_launch_setup_wizard(self):
-        """Launches the 1-Click Onboarding provisioner."""
-        launch_onboarding_gui()
-        self._check_system_status_async()
+    def run_1click_setup(self) -> Dict[str, Any]:
+        """Launches automated tool installation wizard."""
+        threading.Thread(target=launch_onboarding_gui, daemon=True).start()
+        return {"status": "launched"}
 
-    def _on_open_conf_file(self):
-        """Opens yt-dlp.conf in Notepad."""
-        conf = find_ytdlp_conf()
-        if conf and conf.exists():
-            if sys.platform == "win32":
-                os.system(f"notepad.exe \"{conf}\"")
-            else:
-                subprocess.run(["xdg-open", str(conf)])
+    def run_doctor(self) -> Dict[str, Any]:
+        """Runs system doctor."""
+        threading.Thread(target=run_doctor, daemon=True).start()
+        return {"status": "launched"}
 
-    def _on_run_doctor(self):
-        """Runs the doctor diagnostics check in a separate window or terminal."""
-        run_doctor()
+    def copy_to_clipboard(self, text: str) -> Dict[str, Any]:
+        """Copies string to clipboard."""
+        from .recorder import copy_to_clipboard
+        copy_to_clipboard(text)
+        return {"status": "copied"}
 
-    def _on_open_web_studio(self):
-        """Launches the local Web UI at http://127.0.0.1:8765."""
-        threading.Thread(target=launch_web_ui, daemon=True).start()
-        import webbrowser
-        webbrowser.open("http://127.0.0.1:8765")
-
-    def _update_disk_space_display(self, path: Path):
-        """Updates disk space label in sidebar footer."""
+    def get_clipboard_text(self) -> Dict[str, Any]:
+        """Reads current clipboard text."""
         try:
-            free_gb, total_gb = check_free_disk_space(str(path))
-            drive = path.anchor or path.drive or "Disk"
-            self.footer_disk_lbl.configure(text=f"💾  {drive} Free: {free_gb:.1f} GB")
+            import pyperclip
+            return {"text": pyperclip.paste()}
         except Exception:
-            pass
+            return {"text": ""}
 
-    def _check_system_status_async(self):
-        """Checks yt-dlp & FFmpeg status in the background."""
-        def _chk():
-            y = find_ytdlp()
-            f = find_ffmpeg()
-            status_text = "🟢  yt-dlp Engine Ready" if (y and f) else "🟡  Setup Recommended"
-            status_color = COLOR_SUCCESS if (y and f) else COLOR_WARNING
-            dl_dir = get_conf_download_dir()
 
-            def _update():
-                self.footer_status_pill.configure(text=status_text, text_color=status_color)
-                self._update_disk_space_display(dl_dir)
-            self.root.after(0, _update)
+# =============================================================================
+# MODERN OBSIDIAN HTML / CSS / JS APPLICATION TEMPLATE
+# =============================================================================
 
-        threading.Thread(target=_chk, daemon=True).start()
+def generate_studio_html() -> str:
+    conf = find_ytdlp_conf()
+    conf_name = conf.name if conf else "Default"
+    conf_dir = str(get_conf_download_dir(conf))
 
-    def _start_clipboard_monitor(self):
-        """Monitors clipboard for valid video links to offer instant pasting."""
-        def _poll():
-            while True:
-                time.sleep(1.2)
-                try:
-                    txt = self.root.clipboard_get().strip()
-                    if txt and txt != self._clip_last:
-                        self._clip_last = txt
-                        if any(domain in txt for domain in ["youtube.com", "youtu.be", "tiktok.com", "twitch.tv", "kick.com"]):
-                            def _notify():
-                                if not self.url_entry.get().strip():
-                                    self.url_entry.delete(0, "end")
-                                    self.url_entry.insert(0, txt)
-                                    self.status_msg_lbl.configure(
-                                        text=f"📋 Link detected from clipboard! Click 'Analyze' or 'START DOWNLOAD'.",
-                                        text_color=COLOR_ACCENT
-                                    )
-                            self.root.after(0, _notify)
-                except Exception:
-                    pass
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreamVortex Studio — Universal yt-dlp &amp; Live Suite v1.2</title>
+  <link rel="icon" type="image/png" href="/icon.png">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {{
+      background: #080b11;
+      background-image: 
+        radial-gradient(circle at 10% 10%, rgba(0, 242, 254, 0.07) 0%, transparent 45%),
+        radial-gradient(circle at 90% 90%, rgba(79, 172, 254, 0.05) 0%, transparent 45%);
+      color: #f1f5f9;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      overflow-x: hidden;
+      user-select: none;
+    }}
+    .mono {{ font-family: 'JetBrains Mono', monospace; }}
+    .glass {{
+      background: rgba(15, 21, 35, 0.7);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }}
+    .glass-input {{
+      background: rgba(10, 14, 24, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }}
+    .glass-input:focus {{
+      border-color: #00f2fe;
+      box-shadow: 0 0 0 3px rgba(0, 242, 254, 0.2);
+    }}
+    .btn-gradient {{
+      background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+      color: #040813;
+      font-weight: 700;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }}
+    .btn-gradient:hover {{
+      transform: translateY(-1px);
+      box-shadow: 0 8px 25px -4px rgba(0, 242, 254, 0.4);
+    }}
+    .live-dot::before {{
+      content: '';
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff2a5f;
+      margin-right: 6px;
+      box-shadow: 0 0 10px #ff2a5f;
+      animation: pulse 1.5s infinite;
+    }}
+    @keyframes pulse {{
+      0% {{ opacity: 1; transform: scale(1); }}
+      50% {{ opacity: 0.35; transform: scale(0.8); }}
+      100% {{ opacity: 1; transform: scale(1); }}
+    }}
+    ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+    ::-webkit-scrollbar-track {{ background: rgba(0, 0, 0, 0.2); }}
+    ::-webkit-scrollbar-thumb {{ background: rgba(255, 255, 255, 0.15); border-radius: 3px; }}
+    ::-webkit-scrollbar-thumb:hover {{ background: rgba(0, 242, 254, 0.4); }}
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
 
-        threading.Thread(target=_poll, daemon=True).start()
+  <!-- Header -->
+  <header class="glass sticky top-0 z-50 px-6 py-3.5 border-b border-white/5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-500 flex items-center justify-center text-slate-950 font-black text-xl shadow-lg shadow-cyan-500/20">
+        ⚡
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 via-sky-300 to-blue-400 bg-clip-text text-transparent">
+            StreamVortex
+          </h1>
+          <span class="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 mono">
+            STUDIO v1.2
+          </span>
+          <span class="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mono">
+            Config: {conf_name}
+          </span>
+          <button onclick="pyCall('open_folder')" class="text-[9px] font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-slate-800/80 text-slate-300 hover:text-white border border-white/10 mono cursor-pointer flex items-center gap-1" title="Click to open active downloads folder">
+            📂 <span id="hdrDlDir" class="truncate max-w-[200px]">{conf_dir}</span>
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-400 mono">Universal Live &amp; VOD Stream Intelligence // Powered by yt-dlp</p>
+      </div>
+    </div>
 
+    <!-- Center Navigation Tabs -->
+    <div class="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-white/5">
+      <button onclick="switchTab('studio')" id="tabBtn-studio" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-cyan-400 text-slate-950">
+        ⚡ Studio &amp; Player
+      </button>
+      <button onclick="switchTab('library')" id="tabBtn-library" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-300 hover:text-white">
+        📁 Library
+      </button>
+      <button onclick="switchTab('batch')" id="tabBtn-batch" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-300 hover:text-white">
+        📦 Batch
+      </button>
+      <button onclick="switchTab('watchdog')" id="tabBtn-watchdog" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-300 hover:text-white">
+        🔴 Watchdog
+      </button>
+      <button onclick="switchTab('repair')" id="tabBtn-repair" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-300 hover:text-white">
+        🛠️ Fix Containers
+      </button>
+      <button onclick="switchTab('settings')" id="tabBtn-settings" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-300 hover:text-white">
+        ⚙️ Settings
+      </button>
+    </div>
+
+    <!-- Header Actions -->
+    <div class="flex items-center gap-2">
+      <button onclick="pyCall('run_1click_setup')" class="px-3 py-1.5 rounded-lg glass text-xs font-semibold text-amber-300 hover:text-white hover:border-amber-400/50 flex items-center gap-1 transition-all cursor-pointer">
+        ⚡ Setup Wizard
+      </button>
+      <button onclick="pyCall('open_folder')" class="px-3 py-1.5 rounded-lg glass text-xs font-semibold text-slate-300 hover:text-white hover:border-cyan-400/50 flex items-center gap-1 transition-all cursor-pointer">
+        📂 Explorer
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Viewport -->
+  <main class="flex-1 max-w-6xl w-full mx-auto p-6 flex flex-col gap-6">
+
+    <!-- Active Downloads Live Monitoring Strip (Always visible when downloads active) -->
+    <div id="activeDownloadsContainer" class="hidden flex flex-col gap-3 glass rounded-2xl p-5 border border-cyan-500/30 shadow-2xl">
+      <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-cyan-400">
+        <span class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          Active Downloads Queue &amp; Recordings
+        </span>
+        <div class="flex items-center gap-2">
+          <span id="activeCount" class="mono text-slate-400 text-[11px]">0 active</span>
+          <button onclick="onClearCompletedClick()" class="glass hover:bg-white/10 text-slate-300 hover:text-white px-2.5 py-0.5 rounded text-[10px] mono cursor-pointer">
+            🧹 Clear Completed
+          </button>
+        </div>
+      </div>
+      <div id="activeJobsList" class="flex flex-col gap-2.5"></div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 1: STUDIO & LIVE PLAYER (Primary Downloader)                  -->
+    <!-- ================================================================= -->
+    <div id="tab-studio" class="tab-content flex flex-col gap-5">
+      
+      <!-- URL Bar Card -->
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-3.5">
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+            <span>Video, Stream, or Playlist URL</span>
+          </label>
+          <span class="text-xs text-cyan-400 mono">tiktok live • youtube • twitch • kick • hls (.m3u8)</span>
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-2.5">
+          <div class="relative flex-1">
+            <input 
+              type="text" 
+              id="streamUrlInput" 
+              placeholder="Paste any stream or video URL (e.g. TikTok Live, YouTube, Twitch, Kick, or .m3u8)..." 
+              class="w-full glass-input rounded-xl px-4 py-3 text-sm mono text-white outline-none pr-10"
+              onkeydown="if(event.key === 'Enter') onAnalyzeClick()"
+            />
+          </div>
+          <button onclick="onPasteClick()" class="glass hover:border-cyan-400 px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+            📋 Paste
+          </button>
+          <button onclick="onAnalyzeClick()" id="analyzeBtn" class="btn-gradient px-6 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap">
+            <span>⚡ Analyze</span>
+          </button>
+        </div>
+
+        <!-- Quick Platform Preset Pills -->
+        <div class="flex items-center gap-1.5 flex-wrap pt-0.5 text-xs">
+          <span class="text-slate-400 mono text-[11px]">Presets:</span>
+          <button onclick="setPreset('https://www.tiktok.com/@weathernewslive/live')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-pink-500/50 transition-all cursor-pointer">🎵 TikTok Live</button>
+          <button onclick="setPreset('https://www.youtube.com/watch?v=dQw4w9WgXcQ')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-red-500/50 transition-all cursor-pointer">▶️ YouTube</button>
+          <button onclick="setPreset('https://www.twitch.tv/')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-purple-500/50 transition-all cursor-pointer">🟣 Twitch</button>
+          <button onclick="setPreset('https://kick.com/')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-green-500/50 transition-all cursor-pointer">🟢 Kick</button>
+          <button onclick="setPreset('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8')" class="px-2.5 py-1 rounded-lg glass text-slate-300 hover:text-white hover:border-cyan-500/50 transition-all cursor-pointer">⚡ Demo M3U8</button>
+        </div>
+
+        <div id="loader" class="hidden py-3 text-center mono text-xs text-cyan-400 animate-pulse flex items-center justify-center gap-2">
+          <svg class="animate-spin h-4 w-4 text-cyan-400" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
+          <span>Resolving multi-bitrate streams &amp; inspecting manifests...</span>
+        </div>
+      </div>
+
+      <!-- Live Player & Stream Preview Section (Appears when analyzed) -->
+      <div id="playerSection" class="hidden flex flex-col gap-5">
+        
+        <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4 border border-cyan-500/20">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/5">
+            <div>
+              <div class="flex items-center gap-2 mb-1 flex-wrap">
+                <span id="platformBadge" class="text-[11px] px-2.5 py-0.5 rounded-full font-bold mono bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                  ⚡ Universal
+                </span>
+                <span id="liveStatusBadge" class="live-dot bg-red-500/15 border border-red-500/30 text-red-400 text-[11px] px-2.5 py-0.5 rounded-full font-bold mono">
+                  LIVE STREAM
+                </span>
+                <span id="uploaderBadge" class="text-xs font-semibold text-cyan-400 mono">@creator</span>
+              </div>
+              <h2 id="streamTitle" class="text-lg font-bold tracking-tight text-white">Stream Title</h2>
+            </div>
+            
+            <div class="flex items-center gap-2 flex-wrap">
+              <button onclick="startDownloadCurrent('video')" class="btn-gradient px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+                ⬇️ Download Best
+              </button>
+              <button onclick="startDownloadCurrent('audio')" class="glass hover:border-cyan-400 px-3.5 py-2 rounded-xl text-xs font-bold text-white flex items-center gap-1.5 transition-all cursor-pointer">
+                🎵 Audio (MP3)
+              </button>
+              <button onclick="copyStreamUrl()" class="glass hover:border-cyan-400 px-3 py-2 rounded-xl text-xs font-bold text-slate-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer">
+                📋 Copy M3U8
+              </button>
+              <button onclick="playInExternalPlayer()" class="glass hover:border-cyan-400 px-3 py-2 rounded-xl text-xs font-bold text-cyan-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer">
+                ▶ VLC/MPV
+              </button>
+            </div>
+          </div>
+
+          <!-- Embedded Live Player -->
+          <div class="relative w-full aspect-video rounded-xl overflow-hidden bg-black border border-white/10 shadow-2xl">
+            <video id="hlsVideo" controls autoplay muted class="w-full h-full object-contain"></video>
+          </div>
+
+          <!-- Multi-Bitrate Formats Grid -->
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
+              <span>Discovered Multi-Bitrate Formats</span>
+              <span class="text-[11px] text-slate-500 font-normal">Click any format to preview in player</span>
+            </h3>
+            <div id="formatsList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Format Options & Destination Panel -->
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">Format &amp; Output Configuration</h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Quality Profile -->
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs text-slate-400">Quality Preset</label>
+            <select id="qualitySelect" class="glass-input rounded-xl px-3 py-2.5 text-xs mono text-cyan-300 outline-none cursor-pointer">
+              <option value="max">🎬 Best Quality (Video + Audio)</option>
+              <option value="1080p">📱 1080p MP4 (High Definition)</option>
+              <option value="720p">⚡ 720p Fast (Standard HD)</option>
+              <option value="480p">💾 480p Data Saver</option>
+              <option value="conf">⚙️ Respect yt-dlp.conf</option>
+              <option value="audio_mp3">🎵 MP3 (320k Lossless Audio)</option>
+              <option value="audio_m4a">🎧 M4A (AAC Audio)</option>
+            </select>
+          </div>
+
+          <!-- Container Format -->
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs text-slate-400">Output Container</label>
+            <select id="containerSelect" class="glass-input rounded-xl px-3 py-2.5 text-xs mono text-cyan-300 outline-none cursor-pointer">
+              <option value="mp4">MP4 (Universal Compatibility)</option>
+              <option value="mkv">MKV (Matroska Multi-Track)</option>
+              <option value="webm">WebM (VP9/Opus)</option>
+              <option value="flv">FLV (Flash Video)</option>
+              <option value="ts">TS (Raw MPEG-TS Stream)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Options Checkboxes -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="chkSubtitles" checked class="rounded accent-cyan-400">
+            <span>Download Subtitles</span>
+          </label>
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="chkAudioOnly" onchange="onAudioToggle()" class="rounded accent-cyan-400">
+            <span>Audio Only (MP3)</span>
+          </label>
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="chkMetadata" checked class="rounded accent-cyan-400">
+            <span>Embed Metadata</span>
+          </label>
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="chkThumbnail" checked class="rounded accent-cyan-400">
+            <span>Embed Thumbnail</span>
+          </label>
+        </div>
+
+        <!-- Save Destination Folder -->
+        <div class="flex flex-col gap-1.5 pt-2 border-t border-white/5">
+          <label class="text-xs text-slate-400 flex items-center justify-between">
+            <span>Save Destination Folder</span>
+            <span class="text-[11px] text-cyan-400">Synchronized with yt-dlp.conf</span>
+          </label>
+          <div class="flex gap-2">
+            <input 
+              type="text" 
+              id="saveFolderInput" 
+              value="{conf_dir}" 
+              class="flex-1 glass-input rounded-xl px-3.5 py-2.5 text-xs mono text-slate-200 outline-none" 
+              readonly 
+            />
+            <button onclick="onSelectFolderClick()" class="glass hover:border-cyan-400 px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white transition-all cursor-pointer whitespace-nowrap">
+              📁 Browse...
+            </button>
+            <button onclick="pyCall('open_folder')" class="glass hover:border-cyan-400 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white transition-all cursor-pointer">
+              ↗ Open
+            </button>
+          </div>
+        </div>
+
+        <!-- Big Action Download Button -->
+        <div class="pt-2 flex justify-end">
+          <button onclick="startDownloadCurrent('custom')" class="btn-gradient w-full sm:w-auto px-10 py-3.5 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-xl">
+            <span>⬇️ START DOWNLOAD</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 2: LIBRARY & HISTORY                                          -->
+    <!-- ================================================================= -->
+    <div id="tab-library" class="tab-content hidden flex flex-col gap-4">
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <div class="flex items-center justify-between pb-3 border-b border-white/5">
+          <div>
+            <h2 class="text-base font-bold text-white flex items-center gap-2">
+              <span>📁</span> Downloaded Media Library &amp; History
+            </h2>
+            <p class="text-xs text-slate-400">Browse recorded live streams and downloaded video archives.</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="loadHistory()" class="glass hover:border-cyan-400 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-300">
+              🔄 Refresh
+            </button>
+            <button onclick="pyCall('open_folder')" class="btn-gradient px-4 py-1.5 rounded-xl text-xs font-bold">
+              📂 Open Folder
+            </button>
+          </div>
+        </div>
+
+        <input 
+          type="text" 
+          id="libSearchInput" 
+          placeholder="🔍 Search library by title, creator, or URL..." 
+          class="glass-input rounded-xl px-4 py-2.5 text-xs mono text-white outline-none w-full"
+          oninput="filterHistory()"
+        />
+
+        <div id="historyContainer" class="flex flex-col gap-2 max-h-[500px] overflow-y-auto pr-1"></div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 3: BATCH DOWNLOADER                                           -->
+    <!-- ================================================================= -->
+    <div id="tab-batch" class="tab-content hidden flex flex-col gap-4">
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-base font-bold text-white flex items-center gap-2">
+          <span>📦</span> Batch URL Downloader
+        </h2>
+        <p class="text-xs text-slate-400">
+          Paste multiple stream, video, or playlist links below (one per line). StreamVortex will queue and download them sequentially.
+        </p>
+
+        <textarea 
+          id="batchUrlsInput" 
+          rows="8" 
+          placeholder="https://www.tiktok.com/@creator/live&#10;https://www.youtube.com/watch?v=...&#10;https://twitch.tv/..." 
+          class="glass-input rounded-xl p-3.5 text-xs mono text-white outline-none w-full"
+        ></textarea>
+
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-slate-400">Batch Quality:</label>
+            <select id="batchQualitySelect" class="glass-input rounded-xl px-3 py-1.5 text-xs mono text-cyan-300 outline-none">
+              <option value="max">Best Quality</option>
+              <option value="1080p">1080p MP4</option>
+              <option value="720p">720p Fast</option>
+              <option value="audio_mp3">Audio Only (MP3)</option>
+            </select>
+          </div>
+          <button onclick="onSubmitBatchClick()" class="btn-gradient px-6 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
+            🚀 Start Batch Download
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 4: LIVE WATCHDOG                                              -->
+    <!-- ================================================================= -->
+    <div id="tab-watchdog" class="tab-content hidden flex flex-col gap-4">
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-base font-bold text-white flex items-center gap-2">
+          <span>🔴</span> Creator Live Watchdog
+        </h2>
+        <p class="text-xs text-slate-400">
+          Monitor your favorite TikTok or Twitch creators. StreamVortex will check their status and can immediately launch recording.
+        </p>
+
+        <div class="flex gap-2">
+          <input 
+            type="text" 
+            id="watchdogInput" 
+            placeholder="Creator username (e.g. weathernewslive)..." 
+            class="flex-1 glass-input rounded-xl px-4 py-2.5 text-xs mono text-white outline-none"
+            onkeydown="if(event.key === 'Enter') onAddWatchlistClick()"
+          />
+          <button onclick="onAddWatchlistClick()" class="btn-gradient px-5 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
+            + Add to Watchlist
+          </button>
+        </div>
+
+        <div class="pt-2">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2.5">Monitored Creators</h3>
+          <div id="watchlistContainer" class="flex flex-col gap-2"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 5: CONTAINER REPAIR & FIXUP STUDIO                            -->
+    <!-- ================================================================= -->
+    <div id="tab-repair" class="tab-content hidden flex flex-col gap-4">
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-base font-bold text-white flex items-center gap-2">
+          <span>🛠️</span> Video Container Repair &amp; Interrupted Stream Fixup
+        </h2>
+        <p class="text-xs text-slate-400">
+          Fixes videos that won't play due to MPEG-TS inside .mp4, broken FLV headers, or incomplete .part recordings from interrupted live sessions.
+        </p>
+
+        <div class="flex gap-2">
+          <input 
+            type="text" 
+            id="repairPathInput" 
+            placeholder="Select video file or .part file (or paste path)..." 
+            class="flex-1 glass-input rounded-xl px-4 py-2.5 text-xs mono text-white outline-none"
+          />
+          <button onclick="onSelectRepairFileClick()" class="glass hover:border-cyan-400 px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white cursor-pointer">
+            📁 Browse File...
+          </button>
+          <button onclick="onInspectRepairClick()" class="btn-gradient px-5 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
+            🔍 Inspect
+          </button>
+        </div>
+
+        <!-- Inspection Result Card -->
+        <div id="repairCard" class="hidden glass rounded-xl p-4 flex flex-col gap-3 border border-white/10">
+          <div class="flex items-center justify-between">
+            <span id="repairFileName" class="text-xs font-bold text-white mono truncate max-w-md">video.mp4</span>
+            <span id="repairStatusBadge" class="text-[10px] font-bold mono px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300">INSPECTED</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-xs mono text-slate-300 bg-slate-900/60 p-3 rounded-lg border border-white/5">
+            <div>Extension: <span id="repairExt" class="text-white font-bold">mp4</span></div>
+            <div>True Container: <span id="repairContainer" class="text-cyan-400 font-bold">mpegts</span></div>
+            <div>Size: <span id="repairSize" class="text-slate-400">45 MB</span></div>
+          </div>
+          <div class="flex justify-end gap-2 pt-1">
+            <button onclick="onExecuteRepairClick()" class="btn-gradient px-6 py-2 rounded-xl text-xs font-bold cursor-pointer">
+              ⚡ Lossless Remux &amp; Faststart Fix
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 6: SETTINGS & DIAGNOSTICS                                     -->
+    <!-- ================================================================= -->
+    <div id="tab-settings" class="tab-content hidden flex flex-col gap-4">
+      <div class="glass rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-base font-bold text-white flex items-center gap-2">
+          <span>⚙️</span> Studio Settings &amp; System Health
+        </h2>
+
+        <!-- Health Cards Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="glass p-3.5 rounded-xl flex flex-col gap-1">
+            <span class="text-[10px] uppercase font-bold text-slate-400 mono">yt-dlp Engine</span>
+            <span id="healthYtdlp" class="text-xs font-bold text-emerald-400">Checking...</span>
+          </div>
+          <div class="glass p-3.5 rounded-xl flex flex-col gap-1">
+            <span class="text-[10px] uppercase font-bold text-slate-400 mono">FFmpeg Transcoder</span>
+            <span id="healthFfmpeg" class="text-xs font-bold text-emerald-400">Checking...</span>
+          </div>
+          <div class="glass p-3.5 rounded-xl flex flex-col gap-1">
+            <span class="text-[10px] uppercase font-bold text-slate-400 mono">Free Disk Space</span>
+            <span id="healthDisk" class="text-xs font-bold text-cyan-400">Checking...</span>
+          </div>
+          <div class="glass p-3.5 rounded-xl flex flex-col gap-1">
+            <span class="text-[10px] uppercase font-bold text-slate-400 mono">Active Config</span>
+            <span id="healthConf" class="text-xs font-bold text-amber-300 mono">{conf_name}</span>
+          </div>
+        </div>
+
+        <!-- Settings Options -->
+        <div class="flex flex-col gap-3 pt-2 border-t border-white/5">
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-slate-400">Global Download Directory (yt-dlp.conf)</label>
+            <div class="flex gap-2">
+              <input type="text" id="settingsDlDir" value="{conf_dir}" class="flex-1 glass-input rounded-xl px-3.5 py-2 text-xs mono text-white outline-none" readonly />
+              <button onclick="onSelectFolderClick()" class="glass hover:border-cyan-400 px-4 py-2 rounded-xl text-xs font-semibold text-slate-200">Browse...</button>
+            </div>
+          </div>
+
+          <div class="flex gap-3 pt-2">
+            <button onclick="pyCall('run_doctor')" class="glass hover:border-cyan-400 px-4 py-2 rounded-xl text-xs font-bold text-cyan-300">
+              🩺 Run System Doctor Diagnostics
+            </button>
+            <button onclick="pyCall('run_1click_setup')" class="glass hover:border-amber-400 px-4 py-2 rounded-xl text-xs font-bold text-amber-300">
+              ⚡ Launch 1-Click Setup Wizard
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Toast Notification Pill -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 glass bg-slate-900/95 border-cyan-400/50 text-white px-5 py-3 rounded-xl text-xs shadow-2xl hidden transition-all duration-300">
+    Notification
+  </div>
+
+  <script>
+    let currentStream = null;
+    let hls = null;
+    let rawHistory = [];
+
+    // Helper to call native Python API via pywebview bridge or HTTP fallback
+    async function pyCall(method, ...args) {{
+      if (window.pywebview && window.pywebview.api && window.pywebview.api[method]) {{
+        return await window.pywebview.api[method](...args);
+      }}
+      return null;
+    }}
+
+    function showToast(msg) {{
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.classList.remove('hidden');
+      setTimeout(() => {{ toast.classList.add('hidden'); }}, 3200);
+    }}
+
+    function switchTab(tabId) {{
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(btn => {{
+        btn.classList.remove('bg-cyan-400', 'text-slate-950');
+        btn.classList.add('text-slate-300');
+      }});
+
+      const target = document.getElementById('tab-' + tabId);
+      if (target) target.classList.remove('hidden');
+      const activeBtn = document.getElementById('tabBtn-' + tabId);
+      if (activeBtn) {{
+        activeBtn.classList.add('bg-cyan-400', 'text-slate-950');
+        activeBtn.classList.remove('text-slate-300');
+      }}
+
+      if (tabId === 'library') loadHistory();
+      if (tabId === 'watchdog') loadWatchlist();
+      if (tabId === 'settings') loadHealth();
+    }}
+
+    async function onPasteClick() {{
+      const res = await pyCall('get_clipboard_text');
+      if (res && res.text) {{
+        document.getElementById('streamUrlInput').value = res.text.trim();
+        showToast('Pasted URL from clipboard');
+      }} else {{
+        try {{
+          const txt = await navigator.clipboard.readText();
+          if (txt) {{
+            document.getElementById('streamUrlInput').value = txt.trim();
+            showToast('Pasted URL from clipboard');
+          }}
+        }} catch(e) {{}}
+      }}
+    }}
+
+    function setPreset(url) {{
+      document.getElementById('streamUrlInput').value = url;
+      onAnalyzeClick();
+    }}
+
+    async function onAnalyzeClick() {{
+      const url = document.getElementById('streamUrlInput').value.trim();
+      if (!url) {{
+        showToast('Please enter or paste a stream URL');
+        return;
+      }}
+
+      const loader = document.getElementById('loader');
+      const playerSection = document.getElementById('playerSection');
+      loader.classList.remove('hidden');
+      playerSection.classList.add('hidden');
+
+      try {{
+        const data = await pyCall('resolve_url', url);
+        loader.classList.add('hidden');
+
+        if (!data || data.error) {{
+          alert('Resolution Error: ' + (data ? data.error : 'Unknown'));
+          return;
+        }}
+
+        currentStream = data;
+        document.getElementById('streamTitle').innerText = data.title || 'Untitled Stream';
+        document.getElementById('uploaderBadge').innerText = data.uploader ? '@' + data.uploader : '';
+        document.getElementById('liveStatusBadge').innerText = data.is_live ? 'LIVE STREAM' : 'VOD VIDEO';
+
+        if (data.platform) {{
+          const pb = document.getElementById('platformBadge');
+          pb.innerText = `${{data.platform.icon || '⚡'}} ${{data.platform.name || 'Universal'}}`;
+          if (data.platform.badge_color) {{
+            pb.style.borderColor = data.platform.badge_color + '55';
+            pb.style.color = data.platform.badge_color;
+          }}
+        }}
+
+        renderFormats(data.formats || []);
+
+        const previewTarget = data.preview_url || data.direct_url;
+        if (previewTarget) {{
+          playStream(previewTarget);
+        }}
+
+        playerSection.classList.remove('hidden');
+        showToast('Stream resolved successfully!');
+      }} catch (e) {{
+        loader.classList.add('hidden');
+        alert('Failed to resolve stream: ' + e);
+      }}
+    }}
+
+    function renderFormats(formats) {{
+      const container = document.getElementById('formatsList');
+      container.innerHTML = '';
+
+      if (!formats || formats.length === 0) {{
+        container.innerHTML = '<div class="text-xs text-slate-500 py-2 mono">No format details available</div>';
+        return;
+      }}
+
+      formats.forEach(f => {{
+        const card = document.createElement('div');
+        card.className = 'glass hover:border-cyan-400/60 p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition-all';
+        card.onclick = () => playStream(f.url);
+        card.innerHTML = `
+          <div>
+            <div class="text-xs font-bold text-white mono">${{f.id || 'stream'}}</div>
+            <div class="text-[11px] text-slate-400 mono">${{f.protocol}} • ${{f.height ? f.height + 'p' : (f.ext || 'mp4')}}</div>
+          </div>
+          <div class="flex gap-1">
+            <button onclick="event.stopPropagation(); pyCall('copy_to_clipboard', '${{f.url}}'); showToast('URL Copied!');" class="glass hover:bg-white/10 px-2.5 py-1 rounded-lg text-xs mono text-cyan-400">
+              Copy
+            </button>
+            <button onclick="event.stopPropagation(); triggerDownloadDirect('${{f.url}}', '${{f.id}}');" class="btn-gradient px-2.5 py-1 rounded-lg text-xs font-bold" title="Download Format">
+              ⬇️
+            </button>
+          </div>
+        `;
+        container.appendChild(card);
+      }});
+    }}
+
+    function playStream(url) {{
+      const video = document.getElementById('hlsVideo');
+      if (Hls.isSupported() && (url.includes('.m3u8') || url.includes('proxy_hls') || url.includes('pull-hls'))) {{
+        if (hls) hls.destroy();
+        hls = new Hls({{ enableWorker: true }});
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {{}}));
+        hls.on(Hls.Events.ERROR, function(event, data) {{
+          if (data && data.fatal) {{
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !url.includes('proxy_hls') && currentStream && currentStream.direct_url) {{
+              const proxyUrl = '/api/proxy_hls?url=' + encodeURIComponent(currentStream.direct_url);
+              hls.loadSource(proxyUrl);
+            }} else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {{
+              hls.recoverMediaError();
+            }}
+          }}
+        }});
+      }} else {{
+        video.src = url;
+        video.play().catch(() => {{}});
+      }}
+    }}
+
+    async function onClearCompletedClick() {{
+      await pyCall('clear_completed_jobs');
+      pollActiveDownloads();
+      showToast('Cleared completed tasks from queue');
+    }}
+
+    function copyStreamUrl() {{
+      if (!currentStream || !currentStream.formats || !currentStream.formats[0]) return;
+      pyCall('copy_to_clipboard', currentStream.formats[0].url);
+      showToast('Stream URL copied to clipboard!');
+    }}
+
+    function playInExternalPlayer() {{
+      if (!currentStream) return;
+      const u = currentStream.direct_url || (currentStream.formats && currentStream.formats[0] ? currentStream.formats[0].url : '');
+      if (u) pyCall('play_in_external_player', u);
+    }}
+
+    async function onSelectFolderClick() {{
+      const res = await pyCall('select_folder');
+      if (res && res.folder) {{
+        document.getElementById('saveFolderInput').value = res.folder;
+        document.getElementById('hdrDlDir').innerText = res.folder;
+        showToast('Download folder updated!');
+      }}
+    }}
+
+    function onAudioToggle() {{
+      const isAudio = document.getElementById('chkAudioOnly').checked;
+      const qSelect = document.getElementById('qualitySelect');
+      if (isAudio) {{
+        qSelect.value = 'audio_mp3';
+      }} else if (qSelect.value.startsWith('audio_')) {{
+        qSelect.value = 'max';
+      }}
+    }}
+
+    async function startDownloadCurrent(type) {{
+      const inputUrl = document.getElementById('streamUrlInput').value.trim();
+      const targetUrl = (currentStream && currentStream.direct_url) ? currentStream.direct_url : inputUrl;
+      if (!targetUrl) {{
+        showToast('Please enter a stream URL first');
+        return;
+      }}
+
+      const title = currentStream ? currentStream.title : '';
+      const uploader = currentStream ? currentStream.uploader : '';
+      const isLive = currentStream ? Boolean(currentStream.is_live) : false;
+      const q = document.getElementById('qualitySelect').value;
+      const isAudio = (type === 'audio') || document.getElementById('chkAudioOnly').checked || q.startsWith('audio_');
+      const container = document.getElementById('containerSelect').value;
+      const customFolder = document.getElementById('saveFolderInput').value;
+
+      showToast(`Starting download (${{isAudio ? 'Audio' : 'Video'}})...`);
+      const res = await pyCall('start_download', {{
+        url: targetUrl,
+        title: title,
+        uploader: uploader,
+        is_live: isLive,
+        quality: q,
+        audio_only: isAudio,
+        container: container,
+        folder: customFolder
+      }});
+
+      if (res && res.job_id) {{
+        showToast('Download queued in active status tracker');
+        pollActiveDownloads();
+      }}
+    }}
+
+    async function triggerDownloadDirect(url, formatId) {{
+      const title = currentStream ? currentStream.title : formatId;
+      const uploader = currentStream ? currentStream.uploader : '';
+      const isLive = currentStream ? Boolean(currentStream.is_live) : false;
+      await pyCall('start_download', {{
+        url: url,
+        title: title,
+        uploader: uploader,
+        is_live: isLive,
+        quality: 'max'
+      }});
+      showToast('Downloading format ' + formatId);
+      pollActiveDownloads();
+    }}
+
+    let pollTimer = null;
+    async function pollActiveDownloads() {{
+      try {{
+        const jobs = await pyCall('get_active_jobs') || [];
+        const container = document.getElementById('activeDownloadsContainer');
+        const list = document.getElementById('activeJobsList');
+        const countLbl = document.getElementById('activeCount');
+
+        const running = jobs.filter(j => !j.completed);
+        if (running.length === 0 && jobs.length === 0) {{
+          container.classList.add('hidden');
+          return;
+        }}
+
+        container.classList.remove('hidden');
+        countLbl.innerText = `${{running.length}} running • ${{jobs.length}} total`;
+        list.innerHTML = '';
+
+        jobs.slice(-5).reverse().forEach(j => {{
+          const item = document.createElement('div');
+          item.className = 'glass p-3 rounded-xl flex flex-col gap-1.5 text-xs';
+          const pct = Math.min(100, Math.max(0, j.progress || 0));
+          const isDone = j.status === 'completed';
+          const isFail = j.status === 'failed';
+          const isStopped = j.status === 'stopped';
+          const isCapturing = j.status === 'capturing' || (j.is_live && pct === 0 && !isDone && !isFail && !isStopped);
+          
+          let statusColor = 'text-cyan-400';
+          let badgeText = pct.toFixed(1) + '%';
+          if (isDone) {{ statusColor = 'text-emerald-400'; badgeText = 'COMPLETED'; }}
+          else if (isFail) {{ statusColor = 'text-red-400'; badgeText = 'FAILED'; }}
+          else if (isStopped) {{ statusColor = 'text-amber-400'; badgeText = 'STOPPED'; }}
+          else if (isCapturing) {{ statusColor = 'text-rose-400 animate-pulse'; badgeText = '🔴 RECORDING'; }}
+
+          const barWidth = isCapturing ? '100%' : `${{pct}}%`;
+          const barClass = isCapturing ? 'h-full bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 rounded-full animate-pulse' : 'h-full bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all duration-300';
+
+          item.innerHTML = `
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-white truncate max-w-md">${{j.title}}</span>
+              <div class="flex items-center gap-2">
+                <span class="mono ${{statusColor}} font-bold">${{badgeText}}</span>
+                ${{!j.completed ? `<button onclick="pyCall('stop_job', '${{j.id}}'); showToast('Stopping recording and finalizing file...');" class="glass hover:bg-red-500/20 text-red-400 px-2 py-0.5 rounded text-[10px] mono">⏹️ Stop</button>` : ''}}
+                ${{j.saved_path ? `<button onclick="pyCall('open_file', '${{j.saved_path.replace(/\\\\/g, '\\\\\\\\')}}')" class="glass hover:bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded text-[10px] mono">▶ Play</button>` : ''}}
+              </div>
+            </div>
+            <div class="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden border border-white/5">
+              <div class="${{barClass}}" style="width: ${{barWidth}}"></div>
+            </div>
+            <div class="flex items-center justify-between text-[11px] text-slate-400 mono">
+              <span>${{j.status.toUpperCase()}}</span>
+              <span>${{j.speed || '--'}} • ETA: ${{j.eta || '--'}}</span>
+            </div>
+          `;
+          list.appendChild(item);
+        }});
+
+        if (running.length > 0) {{
+          if (pollTimer) clearTimeout(pollTimer);
+          pollTimer = setTimeout(pollActiveDownloads, 1200);
+        }}
+      }} catch (e) {{}}
+    }}
+
+    async function loadHistory() {{
+      rawHistory = await pyCall('get_history') || [];
+      renderHistoryList(rawHistory);
+    }}
+
+    function filterHistory() {{
+      const q = document.getElementById('libSearchInput').value.toLowerCase().trim();
+      if (!q) {{
+        renderHistoryList(rawHistory);
+        return;
+      }}
+      const filtered = rawHistory.filter(h => 
+        (h.title && h.title.toLowerCase().includes(q)) || 
+        (h.filename && h.filename.toLowerCase().includes(q)) ||
+        (h.stream_url && h.stream_url.toLowerCase().includes(q))
+      );
+      renderHistoryList(filtered);
+    }}
+
+    function renderHistoryList(items) {{
+      const container = document.getElementById('historyContainer');
+      container.innerHTML = '';
+      if (!items || items.length === 0) {{
+        container.innerHTML = '<div class="text-xs text-slate-500 py-8 text-center mono">No downloaded files in library history.</div>';
+        return;
+      }}
+
+      items.slice().reverse().forEach(h => {{
+        const row = document.createElement('div');
+        row.className = 'glass p-3 rounded-xl flex items-center justify-between gap-3';
+        const isAudio = h.media_type === 'audio';
+        const icon = isAudio ? '🎵' : (h.media_type === 'live' ? '🔴' : '🎬');
+        row.innerHTML = `
+          <div class="flex items-center gap-3 overflow-hidden">
+            <span class="text-xl">${{icon}}</span>
+            <div class="overflow-hidden">
+              <div class="font-bold text-white text-xs truncate max-w-lg">${{h.title || 'Downloaded Item'}}</div>
+              <div class="text-[10px] text-slate-400 mono truncate">${{h.timestamp ? h.timestamp.slice(0, 16) : ''}} • ${{h.filename || ''}}</div>
+            </div>
+          </div>
+          <div class="flex gap-1.5 shrink-0">
+            ${{h.filename ? `<button onclick="pyCall('open_file', '${{h.filename.replace(/\\\\/g, '\\\\\\\\')}}')" class="btn-gradient px-3 py-1 rounded-lg text-xs font-bold">▶ Play</button>` : ''}}
+            ${{h.filename ? `<button onclick="pyCall('open_folder', '${{h.filename.replace(/\\\\/g, '\\\\\\\\')}}')" class="glass hover:border-cyan-400 px-2.5 py-1 rounded-lg text-xs text-slate-300">📂 Open</button>` : ''}}
+          </div>
+        `;
+        container.appendChild(row);
+      }});
+    }}
+
+    async function onSubmitBatchClick() {{
+      const txt = document.getElementById('batchUrlsInput').value.trim();
+      const urls = txt.split('\\n').map(u => u.trim()).filter(u => u.startsWith('http'));
+      if (urls.length === 0) {{
+        showToast('Please enter valid URLs (one per line)');
+        return;
+      }}
+      const q = document.getElementById('batchQualitySelect').value;
+      const res = await pyCall('batch_download', {{ urls: urls, quality: q }});
+      if (res && res.count) {{
+        showToast(`Queued ${{res.count}} batch items!`);
+        document.getElementById('batchUrlsInput').value = '';
+        pollActiveDownloads();
+      }}
+    }}
+
+    async function loadWatchlist() {{
+      const list = await pyCall('get_watchlist') || [];
+      const container = document.getElementById('watchlistContainer');
+      container.innerHTML = '';
+      if (!list || list.length === 0) {{
+        container.innerHTML = '<div class="text-xs text-slate-500 py-4 text-center mono">No creators on watchlist. Add one above!</div>';
+        return;
+      }}
+
+      list.forEach(c => {{
+        const row = document.createElement('div');
+        row.className = 'glass p-3 rounded-xl flex items-center justify-between text-xs';
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5">
+            <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+            <span class="mono font-bold text-white">@${{c}}</span>
+          </div>
+          <div class="flex gap-1.5">
+            <button onclick="onCheckCreatorClick('${{c}}')" class="btn-gradient px-3 py-1 rounded-lg text-xs font-bold">Check Live</button>
+            <button onclick="onRemoveWatchlistClick('${{c}}')" class="glass hover:bg-red-500/20 text-red-400 px-2.5 py-1 rounded-lg text-xs mono">Remove</button>
+          </div>
+        `;
+        container.appendChild(row);
+      }});
+    }}
+
+    async function onAddWatchlistClick() {{
+      const input = document.getElementById('watchdogInput');
+      const val = input.value.trim();
+      if (!val) return;
+      await pyCall('add_to_watchlist', val);
+      input.value = '';
+      loadWatchlist();
+      showToast(`Added @${{val}} to Watchlist!`);
+    }}
+
+    async function onRemoveWatchlistClick(creator) {{
+      await pyCall('remove_from_watchlist', creator);
+      loadWatchlist();
+      showToast(`Removed @${{creator}}`);
+    }}
+
+    async function onCheckCreatorClick(creator) {{
+      showToast(`Checking live status for @${{creator}}...`);
+      const res = await pyCall('check_creator_live', creator);
+      if (res && res.is_live) {{
+        alert(`🎉 @${{creator}} is currently LIVE!\\n\\n"${{res.title}}"`);
+        document.getElementById('streamUrlInput').value = `https://www.tiktok.com/@${{creator}}/live`;
+        switchTab('studio');
+        onAnalyzeClick();
+      }} else {{
+        showToast(`@${{creator}} is currently offline.`);
+      }}
+    }}
+
+    async function onSelectRepairFileClick() {{
+      const res = await pyCall('select_file');
+      if (res && res.file) {{
+        document.getElementById('repairPathInput').value = res.file;
+        onInspectRepairClick();
+      }}
+    }}
+
+    async function onInspectRepairClick() {{
+      const path = document.getElementById('repairPathInput').value.trim();
+      if (!path) return;
+      const data = await pyCall('inspect_container', path);
+      if (!data || data.error) {{
+        alert('Inspection error: ' + (data ? data.error : 'File not found'));
+        return;
+      }}
+
+      document.getElementById('repairFileName').innerText = data.filename;
+      document.getElementById('repairExt').innerText = '.' + data.extension;
+      document.getElementById('repairContainer').innerText = data.detected_container;
+      document.getElementById('repairSize').innerText = data.size_mb + ' MB';
+
+      const badge = document.getElementById('repairStatusBadge');
+      if (data.is_mismatched) {{
+        badge.className = 'text-[10px] font-bold mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40';
+        badge.innerText = data.status_label || 'CONTAINER MISMATCH (REPAIR NEEDED)';
+      }} else {{
+        badge.className = 'text-[10px] font-bold mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300';
+        badge.innerText = 'CONTAINER CLEAN';
+      }}
+
+      document.getElementById('repairCard').classList.remove('hidden');
+    }}
+
+    async function onExecuteRepairClick() {{
+      const path = document.getElementById('repairPathInput').value.trim();
+      if (!path) return;
+      showToast('Repairing and remuxing container with FFmpeg...');
+      const res = await pyCall('repair_container', path);
+      if (res && res.repaired_path) {{
+        alert('Repair Successful!\\n\\nSaved clean file:\\n' + res.repaired_path);
+        onInspectRepairClick();
+      }}
+    }}
+
+    async function loadHealth() {{
+      const h = await pyCall('get_system_health');
+      if (!h) return;
+      document.getElementById('healthYtdlp').innerText = h.ytdlp && h.ytdlp.found ? '🟢 Installed (' + (h.ytdlp.version || 'Ready') + ')' : '🔴 Missing';
+      document.getElementById('healthFfmpeg').innerText = h.ffmpeg && h.ffmpeg.found ? '🟢 Installed (' + (h.ffmpeg.version || 'Ready') + ')' : '🔴 Missing';
+      document.getElementById('healthDisk').innerText = h.disk_free_gb ? `${{h.disk_free_gb.toFixed(1)}} GB Free` : '--';
+    }}
+
+    window.addEventListener('DOMContentLoaded', () => {{
+      // Global Keyboard Shortcuts
+      window.addEventListener('keydown', (e) => {{
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+          e.preventDefault();
+          onAnalyzeClick();
+          return;
+        }}
+        if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {{
+          e.preventDefault();
+          const input = document.getElementById('streamUrlInput');
+          if (input) {{
+            switchTab('studio');
+            input.focus();
+            input.select();
+          }}
+        }}
+      }});
+
+      // Global Drag & Drop Handler for URLs and media files
+      window.addEventListener('dragover', (e) => {{
+        e.preventDefault();
+        e.stopPropagation();
+      }});
+
+      window.addEventListener('drop', (e) => {{
+        e.preventDefault();
+        e.stopPropagation();
+        let text = e.dataTransfer.getData('text/plain') || '';
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {{
+          const file = e.dataTransfer.files[0];
+          const filePath = file.path || file.name || '';
+          if (filePath) {{
+            text = filePath;
+          }}
+        }}
+        text = text.trim().replace(/^["']|["']$/g, '');
+        if (!text) return;
+
+        if (text.startsWith('http://') || text.startsWith('https://')) {{
+          document.getElementById('streamUrlInput').value = text;
+          switchTab('studio');
+          onAnalyzeClick();
+          showToast('Dropped URL loaded for analysis');
+        }} else if (text.match(/\\.(mp4|mkv|ts|flv|webm|m4a|aac|mp3|m3u8)$/i) || text.includes('\\\\') || text.includes('/')) {{
+          document.getElementById('repairPathInput').value = text;
+          switchTab('repair');
+          onInspectRepairClick();
+          showToast('Dropped media file loaded for container inspection');
+        }}
+      }});
+
+      setTimeout(async () => {{
+        const state = await pyCall('get_initial_state');
+        if (state) {{
+          if (state.download_dir) {{
+            document.getElementById('saveFolderInput').value = state.download_dir;
+            document.getElementById('hdrDlDir').innerText = state.download_dir;
+            document.getElementById('settingsDlDir').value = state.download_dir;
+          }}
+        }}
+        pollActiveDownloads();
+      }}, 300);
+    }});
+  </script>
+</body>
+</html>
+"""
+
+
+# =============================================================================
+# MAIN DESKTOP GUI LAUNCHER (PyWebView Engine)
+# =============================================================================
 
 def launch_desktop_gui():
-    """Entry point to launch the modern Desktop GUI Studio."""
-    app = StreamVortexApp()
-    app.root.mainloop()
+    """
+    Main entry point for StreamVortex Desktop Studio.
+    Launches PyWebView with Edge WebView2 on Windows, backed by local server.
+    """
+    port = find_free_port(8765)
+    server = HTTPServer(('127.0.0.1', port), StreamVortexHttpHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    api = StreamVortexApi(port=port)
+
+    # Icon candidate resolution
+    ico_path = get_asset_path("StreamVortex.ico") or get_asset_path("icon.ico")
+    icon_str = str(ico_path) if ico_path else None
+
+    if HAS_WEBVIEW:
+        window = webview.create_window(
+            title="StreamVortex Studio — Universal yt-dlp & Live Suite v1.2",
+            url=f"http://127.0.0.1:{port}/",
+            js_api=api,
+            width=1240,
+            height=820,
+            min_size=(980, 640),
+            background_color="#080b11",
+            text_select=True
+        )
+        api.set_window(window)
+
+        # Launch PyWebView desktop application
+        webview.start(icon=icon_str, debug=False)
+    else:
+        # Fallback to browser UI if webview module is absent
+        import webbrowser
+        webbrowser.open(f"http://127.0.0.1:{port}/")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

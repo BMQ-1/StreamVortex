@@ -45,7 +45,7 @@ def download_file_with_progress(
     progress_callback receives: (downloaded_bytes, total_bytes, percent)
     """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "StreamVortex/1.0.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "StreamVortex/1.2.0"})
         with urllib.request.urlopen(req) as resp:
             total_size = int(resp.headers.get("Content-Length", 0))
             downloaded = 0

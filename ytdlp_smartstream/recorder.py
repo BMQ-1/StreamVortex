@@ -105,7 +105,9 @@ def record_stream(
     output_filename: str,
     headers: Optional[Dict[str, str]] = None,
     max_duration_seconds: Optional[int] = None,
-    auto_reconnect: bool = True
+    auto_reconnect: bool = True,
+    title: Optional[str] = None,
+    uploader: Optional[str] = None
 ) -> int:
     """
     Records a live HLS or FLV stream to disk with automatic reconnect & recovery.
@@ -115,7 +117,9 @@ def record_stream(
         stream_url=stream_url,
         output_filename=output_filename,
         headers=headers,
-        max_duration_seconds=max_duration_seconds
+        max_duration_seconds=max_duration_seconds,
+        title=title,
+        uploader=uploader
     )
     if code == 0:
         send_notification("StreamVortex: Recording Finished", f"Saved to {Path(output_filename).name}")

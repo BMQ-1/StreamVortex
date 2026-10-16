@@ -117,7 +117,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             📥 __DOWNLOAD_DIR__
           </span>
         </div>
-        <p class="text-xs text-slate-400 mono">v1.1 // Intelligent Stream &amp; Live Studio</p>
+        <p class="text-xs text-slate-400 mono">v1.2 // Intelligent Stream &amp; Live Studio</p>
       </div>
     </div>
 
@@ -731,12 +731,73 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
                     self.wfile.write(c.read_bytes())
                     return
 
+        # HLS Manifest Proxy (Rewrites URLs and injects CORS headers for seamless live playback)
+        if parsed.path == "/api/proxy_hls":
+            query = urllib.parse.parse_qs(parsed.query)
+            target_url = query.get("url", [None])[0]
+            if not target_url:
+                self.send_error(400, "Missing url parameter")
+                return
+
+            try:
+                from .sniffer import DEFAULT_USER_AGENT
+                headers = {
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Referer": target_url,
+                    "Origin": f"{urllib.parse.urlsplit(target_url).scheme}://{urllib.parse.urlsplit(target_url).netloc}"
+                }
+                req = urllib.request.Request(target_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw_content = resp.read().decode('utf-8', errors='ignore')
+
+                rewritten_lines = []
+                for line in raw_content.splitlines():
+                    sline = line.strip()
+                    if sline and not sline.startswith('#'):
+                        abs_url = urllib.parse.urljoin(target_url, sline)
+                        if '.m3u8' in abs_url or 'pull-hls' in abs_url:
+                            rewritten_lines.append(f"/api/proxy_hls?url={urllib.parse.quote(abs_url)}")
+                        else:
+                            rewritten_lines.append(f"/api/proxy_chunk?url={urllib.parse.quote(abs_url)}")
+                    else:
+                        rewritten_lines.append(line)
+
+                body = "\n".join(rewritten_lines).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_error(502, f"HLS Proxy Error: {e}")
+            return
+
+        # Media Chunk Proxy
+        if parsed.path == "/api/proxy_chunk":
+            query = urllib.parse.parse_qs(parsed.query)
+            target_url = query.get("url", [None])[0]
+            if not target_url:
+                self.send_error(400, "Missing url parameter")
+                return
+
+            try:
+                from .sniffer import DEFAULT_USER_AGENT
+                req = urllib.request.Request(target_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    c_type = resp.headers.get("Content-Type", "video/MP2T")
+                    self.send_response(200)
+                    self.send_header("Content-Type", c_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    shutil.copyfileobj(resp, self.wfile)
+            except Exception as e:
+                self.send_error(502, f"Chunk Proxy Error: {e}")
+            return
+
         if parsed.path in ["/", "/index.html"]:
-            from .engine import get_conf_download_dir
-            conf = find_ytdlp_conf()
-            conf_name = conf.name if conf else "Default"
-            conf_dl = get_conf_download_dir()
-            html = HTML_TEMPLATE.replace("__ACTIVE_CONF__", conf_name).replace("__DOWNLOAD_DIR__", str(conf_dl))
+            from .desktop import generate_studio_html
+            html = generate_studio_html()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -857,10 +918,10 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
                     target_is_live = meta.get("is_live", target_is_live)
                     DOWNLOAD_MANAGER.update_job(job_id, progress=0.0, status="downloading")
 
-                def on_prog(pct, speed, eta):
-                    status = "capturing" if pct is None else "downloading"
+                def on_prog(pct, speed, eta, size='--', status='downloading'):
+                    status_val = "capturing" if pct is None else "downloading"
                     prog_val = 0.0 if pct is None else pct
-                    DOWNLOAD_MANAGER.update_job(job_id, progress=prog_val, speed=speed, eta=eta, status=status)
+                    DOWNLOAD_MANAGER.update_job(job_id, progress=prog_val, speed=speed, eta=eta, status=status_val)
 
                 ret = run_ytdlp_download(
                     stream_url=stream_url,

@@ -51,7 +51,7 @@ def print_banner(conf_path: Optional[str] = None):
     conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle=f"[bold white]v1.1[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
+        subtitle=f"[bold white]v1.2[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -115,6 +115,7 @@ def main():
     parser.add_argument("--batch", "-b", default=None, help="Path to text file containing URLs to download sequentially")
     parser.add_argument("--quality", "-q", default="max", choices=["max", "best", "bestquality", "1080p", "720p", "480p", "conf", "audio_mp3", "audio_m4a"], help="Quality profile (default: max | options: max, 1080p, 720p, 480p, conf, audio_mp3, audio_m4a)")
     parser.add_argument("--open-folder", action="store_true", help="Open the downloads directory in file explorer")
+    parser.add_argument("--fix", "-F", default=None, help="Path to video file or folder to inspect and repair container (MPEG-TS/FLV/part)")
 
     args = parser.parse_args()
 
@@ -126,6 +127,45 @@ def main():
             os.startfile(d)
         else:
             subprocess.run(["xdg-open", str(d)])
+        return
+
+    # Direct container repair tool
+    if args.fix:
+        from .wizard import _handle_repair_fixup
+        from .engine import fixup_recorded_file, sniff_container, EXT_TO_CONTAINER
+        target = Path(args.fix.strip().strip("'\"")).expanduser().resolve()
+        if not target.exists():
+            console.print(f"[bold red][!] File or folder does not exist: {target}[/bold red]")
+            return
+
+        targets = []
+        if target.is_file():
+            targets.append(target)
+        elif target.is_dir():
+            for ext in ["*.mp4", "*.ts", "*.flv", "*.mkv", "*.part", "*.m4v", "*.mov"]:
+                targets.extend([f for f in target.glob(ext) if f.is_file() and f.stat().st_size > 0])
+            targets = sorted(list(set(targets)))
+
+        console.print(f"\n[bold cyan]🛠️ StreamVortex Container Repair:[/bold cyan] Scanning {len(targets)} item(s)...")
+        for f in targets:
+            ext = f.suffix.lower().lstrip(".")
+            target_ext = f.with_suffix("").suffix.lower().lstrip(".") if ext == "part" else ext
+            have = sniff_container(f)
+            if not have:
+                continue
+
+            is_flv = (have == "flv" or ext == "flv")
+            want = "mp4" if is_flv else EXT_TO_CONTAINER.get(target_ext, "mp4")
+            needs_fix = is_flv or (have != want) or (ext == "part")
+
+            if needs_fix:
+                dest_desc = "mp4/mkv" if is_flv else want
+                console.print(f"[yellow][Fixing][/yellow] {f.name} ({have} -> {dest_desc})")
+                res = fixup_recorded_file(f, on_output=lambda line: console.print(f"  [dim]{line}[/dim]"))
+                console.print(f"[green]✓ Saved:[/green] {res.name}")
+            else:
+                console.print(f"[dim]• Clean:[/dim] {f.name} ({have})")
+        console.print("[bold green][+] Finished container inspection & repairs![/bold green]\n")
         return
 
     # Batch file downloader

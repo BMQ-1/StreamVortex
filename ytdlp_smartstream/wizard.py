@@ -66,8 +66,11 @@ def run_wizard():
                 "📥 Change Download Destination (Drag & Drop Any Folder)",
                 "🌐 Open Web Studio (Recommended for beginners)",
                 "🎵 Extract Audio Only MP3 (via yt-dlp)",
+                "🛠️ Repair & Fix Video Containers (Fix MPEG-TS & FLV)",
                 "📁 Open Downloads Folder",
                 "🩺 System Diagnostics & yt-dlp Health Check",
+                "🔌 Sync & Install Native yt-dlp Roaming Plugin",
+                "📦 Build Standalone Executable (StreamVortex.exe)",
                 "🚀 Zero-Setup Onboarding (Install yt-dlp, FFmpeg, Python, VLC)",
                 "🚪 Exit"
             ],
@@ -106,6 +109,11 @@ def run_wizard():
             questionary.press_any_key_to_continue().ask()
             continue
 
+        if "Repair & Fix Video Containers" in choice:
+            _handle_repair_fixup()
+            questionary.press_any_key_to_continue().ask()
+            continue
+
         if "Open Downloads Folder" in choice:
             from .engine import get_conf_download_dir
             d_dir = get_conf_download_dir()
@@ -119,6 +127,39 @@ def run_wizard():
 
         if "System Diagnostics" in choice:
             run_doctor()
+            questionary.press_any_key_to_continue().ask()
+            continue
+
+        if "Sync & Install Native yt-dlp" in choice:
+            console.print("\n[bold cyan]Syncing native StreamVortex extractors into yt-dlp roaming plugin directory...[/bold cyan]")
+            try:
+                from ..install_plugin import install as run_plugin_install
+            except (ImportError, ValueError):
+                try:
+                    import install_plugin
+                    run_plugin_install = install_plugin.install
+                except Exception:
+                    run_plugin_install = None
+            if run_plugin_install:
+                run_plugin_install()
+            else:
+                console.print("[yellow][!] Running setup installer fallback...[/yellow]")
+                from .setup_binaries import check_and_install_dependencies
+                check_and_install_dependencies()
+            questionary.press_any_key_to_continue().ask()
+            continue
+
+        if "Build Standalone Executable" in choice:
+            console.print("\n[bold cyan]Compiling standalone StreamVortex.exe with PyInstaller...[/bold cyan]")
+            try:
+                root_dir = Path(__file__).resolve().parent.parent
+                build_script = root_dir / "build_exe.py"
+                if build_script.exists():
+                    subprocess.run([sys.executable, str(build_script)], check=True)
+                else:
+                    console.print("[yellow][!] build_exe.py script not found.[/yellow]")
+            except Exception as e:
+                console.print(f"[bold red][!] Compilation error: {e}[/bold red]")
             questionary.press_any_key_to_continue().ask()
             continue
 
@@ -373,6 +414,75 @@ def _handle_batch_download():
             respect_conf_output=True
         )
     console.print("\n[bold green][+] All batch downloads complete![/bold green]\n")
+
+
+def _handle_repair_fixup():
+    """
+    Interactive Container Repair & Normalizer.
+    Users can drag-and-drop a single file or a whole directory of videos.
+    Safely inspects containers (detecting raw MPEG-TS or FLV disguised as .mp4, corrupted .part files, etc.)
+    and losslessly remuxes them with timestamps rebuilt and +faststart applied.
+    """
+    from .engine import fixup_recorded_file, sniff_container, EXT_TO_CONTAINER
+
+    console.print("\n[bold cyan]🛠️ Universal Video Container Repair & Normalizer[/bold cyan]")
+    console.print("[dim]Fixes mismatched containers (e.g. MPEG-TS live feeds or FLV saved as .mp4, broken/interrupted .part files).[/dim]\n")
+    console.print("[dim]💡 Tip: Simply [bold white]drag & drop a file OR a folder[/bold white] from Windows Explorer into this window![/dim]")
+
+    raw = questionary.text("Enter or Drag & Drop file or folder path:").ask()
+    if not raw or not raw.strip():
+        return
+
+    path_target = Path(raw.strip().strip("'\"")).expanduser().resolve()
+    if not path_target.exists():
+        console.print(f"[bold red][!] Path does not exist: {path_target}[/bold red]")
+        return
+
+    targets = []
+    if path_target.is_file():
+        targets.append(path_target)
+    elif path_target.is_dir():
+        # Search all common video extensions including .part files
+        exts = ["*.mp4", "*.ts", "*.flv", "*.mkv", "*.part", "*.m4v", "*.mov"]
+        for ext in exts:
+            targets.extend([f for f in path_target.glob(ext) if f.is_file() and f.stat().st_size > 0])
+        targets = sorted(list(set(targets)))
+        console.print(f"\n[cyan]Found {len(targets)} potential video files in {path_target.name}/[/cyan]")
+
+    if not targets:
+        console.print("[yellow][!] No valid video files found at that location.[/yellow]")
+        return
+
+    fixed_count = 0
+    clean_count = 0
+
+    with console.status("[bold cyan]Scanning and repairing media files...[/bold cyan]"):
+        for item in targets:
+            ext = item.suffix.lower().lstrip(".")
+            target_ext = item.with_suffix("").suffix.lower().lstrip(".") if ext == "part" else ext
+            have = sniff_container(item)
+
+            if not have:
+                continue
+
+            is_flv = (have == "flv" or ext == "flv")
+            want = "mp4" if is_flv else EXT_TO_CONTAINER.get(target_ext, "mp4")
+            needs_fix = is_flv or (have != want) or (ext == "part")
+
+            if needs_fix:
+                dest_desc = "mp4/mkv" if is_flv else want
+                console.print(f"\n[bold yellow][Fixing][/bold yellow] {item.name}")
+                console.print(f"  [dim]Detected container:[/dim] [bold red]{have}[/bold red] -> [bold green]{dest_desc}[/bold green]")
+                res_path = fixup_recorded_file(
+                    item,
+                    on_output=lambda line: console.print(f"  [dim]{line}[/dim]")
+                )
+                fixed_count += 1
+                console.print(f"  [bold green]✓ Fixed & Playable:[/bold green] {res_path.name}")
+            else:
+                clean_count += 1
+
+    console.print(f"\n[bold green][+] Repair Complete![/bold green] Fixed: [bold white]{fixed_count}[/bold white] | Already Clean: [dim]{clean_count}[/dim]\n")
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ if sys.platform == "win32":
         pass
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.1.1")
-        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v1.1")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.1.2")
+        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v1.2")
         
         # Apply icon to console window
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
@@ -55,7 +55,11 @@ if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
     if appdata_local:
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(Path(appdata_local) / "ms-playwright")
 
+import multiprocessing
+
 from ytdlp_smartstream.cli import main
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
+

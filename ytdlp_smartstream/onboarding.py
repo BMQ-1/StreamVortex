@@ -135,7 +135,7 @@ def download_file_with_feedback(
 
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamVortex/1.0.0"}
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamVortex/1.2.0"}
         )
 
         with urllib.request.urlopen(req) as resp:
