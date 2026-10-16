@@ -17,7 +17,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Tuple
 
-from .config import get_download_dir, get_config, add_history_entry
+from .config import get_download_dir, get_config, save_config, add_history_entry
 
 
 def find_global_python() -> str:

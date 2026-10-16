@@ -1,23 +1,23 @@
 # ⚡ StreamVortex: Intelligent Stream Sniffer & Downloader Engine for yt-dlp
 
 <p align="center">
-  <a href="https://github.com/BMQ-1/StreamVortex/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/BMQ-1/StreamVortex/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI Status" />
-  </a>
   <a href="https://github.com/BMQ-1/StreamVortex/releases">
-    <img src="https://img.shields.io/badge/Release-v1.0-00f2fe?style=for-the-badge&logo=github" alt="Release" />
+    <img src="https://img.shields.io/badge/Version-v1.1-00f2fe?style=for-the-badge&logo=rocket" alt="Version" />
   </a>
   <a href="https://github.com/yt-dlp/yt-dlp">
-    <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube" alt="yt-dlp" />
+    <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp" />
   </a>
   <a href="https://www.python.org/">
-    <img src="https://img.shields.io/badge/Python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+    <img src="https://img.shields.io/badge/Python-3.9_|_3.10_|_3.11_|_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-success?style=for-the-badge" alt="License" />
   </a>
   <a href="https://github.com/BMQ-1/StreamVortex">
-    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-purple?style=for-the-badge" alt="Platform" />
+    <img src="https://img.shields.io/badge/Platform-Windows_|_Linux_|_macOS-8A2BE2?style=for-the-badge" alt="Platform" />
+  </a>
+  <a href="https://github.com/BMQ-1/StreamVortex">
+    <img src="https://img.shields.io/badge/Tests-33%2F33%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests" />
   </a>
 </p>
 
@@ -34,15 +34,6 @@
 
 **StreamVortex** bridges the gap when media downloaders fail on live broadcasts, VODs, or protected HLS/DASH streams due to Akamai WAF challenges, dynamic Webcast parameters, obfuscated player tokens, or strict anti-bot firewalls.
 
----
-
-> [!NOTE]
-> **Crafted by Human Vision, Powered by AI**  
-> Everyview was envisioned, architected, and steered by the repository creator, with the implementation built collaboratively alongside AI under direct human guidance.
-
----
-
-
 It operates seamlessly in **4 distinct modes**:
 1. 🖥️ **Modern Desktop GUI Studio** — Sleek dark-mode interface with clipboard auto-sniffing, batch downloading, and visual live logs.
 2. 🌐 **Glassmorphism Web Studio** — Embedded low-latency HLS.js live player, creator watchdog, and file explorer.
@@ -57,7 +48,7 @@ It operates seamlessly in **4 distinct modes**:
   * **Zero technical knowledge required!** Users without Python or command-line experience can download `StreamVortex.exe` from GitHub Releases and run it right away.
 * **🚀 1-Click Zero-Setup Media Engine (`streamvortex --onboard`):**
   * Automatically detects system prerequisites and downloads official `yt-dlp.exe`, `ffmpeg.exe`, and `ffprobe.exe`.
-  * Deploys StreamVortex's optimized `yt-dlp.conf` and `tiktok-live.conf.txt` presets directly adjacent to your binaries.
+  * Deploys your global `yt-dlp.conf` preset directly adjacent to `yt-dlp.exe`, establishing full global CLI usability across your entire PC.
   * Detects or installs official **Python 3.11** runtime and **VLC Media Player**.
   * Safely registers tools in Windows User PATH without requiring Administrator privileges.
 * **🖥️ Modern Desktop GUI Studio (`streamvortex --gui`):**

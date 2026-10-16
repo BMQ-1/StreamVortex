@@ -51,7 +51,7 @@ def print_banner(conf_path: Optional[str] = None):
     conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle=f"[bold white]v1.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
+        subtitle=f"[bold white]v1.1[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )

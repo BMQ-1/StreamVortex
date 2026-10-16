@@ -39,6 +39,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>StreamVortex Studio // Universal Stream Intelligence</title>
+  <link rel="icon" type="image/png" href="/icon.png">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -116,7 +117,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             📥 __DOWNLOAD_DIR__
           </span>
         </div>
-        <p class="text-xs text-slate-400 mono">v1.0 // Intelligent Stream &amp; Live Studio</p>
+        <p class="text-xs text-slate-400 mono">v1.1 // Intelligent Stream &amp; Live Studio</p>
       </div>
     </div>
 
@@ -715,6 +716,20 @@ class StreamVortexWebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlsplit(self.path)
+
+        if parsed.path in ["/icon.png", "/favicon.ico"]:
+            candidates = [
+                Path(__file__).resolve().parent.parent / "assets" / "icon.png",
+                Path(__file__).resolve().parent / "assets" / "icon.png",
+                Path("assets/icon.png").resolve()
+            ]
+            for c in candidates:
+                if c.exists():
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.end_headers()
+                    self.wfile.write(c.read_bytes())
+                    return
 
         if parsed.path in ["/", "/index.html"]:
             from .engine import get_conf_download_dir
