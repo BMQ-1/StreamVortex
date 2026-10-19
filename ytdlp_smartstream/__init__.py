@@ -38,9 +38,6 @@ def __getattr__(name: str):
     if name == "run_wizard":
         from .wizard import run_wizard
         return run_wizard
-    if name == "launch_web_ui":
-        from .web_ui import launch_web_ui
-        return launch_web_ui
     if name == "launch_desktop_gui":
         from .desktop import launch_desktop_gui
         return launch_desktop_gui
@@ -76,7 +73,7 @@ __all__ = [
     "remove_from_watchlist",
     "run_doctor",
     "run_wizard",
-    "launch_web_ui",
+    "launch_desktop_gui",
 ]
 
-__version__ = "1.2"
+__version__ = "1.3"

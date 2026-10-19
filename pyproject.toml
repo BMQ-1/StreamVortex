@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "streamvortex"
-version = "1.2"
+version = "1.3"
 description = "StreamVortex: Resilient HLS/DASH/VOD stream intelligence & live watchdog engine for yt-dlp"
 readme = "README.md"
 requires-python = ">=3.9"

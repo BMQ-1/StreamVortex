@@ -2,7 +2,7 @@ from setuptools import setup, find_namespace_packages
 
 setup(
     name="streamvortex",
-    version="1.2",
+    version="1.3",
     description="StreamVortex: Resilient HLS/DASH/VOD stream intelligence & live watchdog engine for yt-dlp",
     packages=find_namespace_packages(include=["yt_dlp_plugins*", "ytdlp_smartstream*"]),
     install_requires=[

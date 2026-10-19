@@ -10,6 +10,7 @@ import sys
 import os
 import re
 import json
+import time
 import shutil
 import subprocess
 import threading
@@ -1510,6 +1511,7 @@ class DownloadManager:
                 "target_path": None,
                 "saved_path": None,
                 "stop_requested": False,
+                "start_time": time.time(),
             }
             self._jobs[job_id] = job
             return job
@@ -1590,18 +1592,34 @@ class DownloadManager:
                     pass
 
         # 4. Check if a partial or downloaded file exists and promote .part if needed
-        if target_path:
+        found_target = None
+        if target_path and not str(target_path).startswith("Configured in"):
             p = Path(target_path)
             part_p = Path(f"{target_path}.part")
-            if part_p.exists() and part_p.stat().st_size > 0 and not p.exists():
+            if part_p.exists() and part_p.stat().st_size > 0:
                 try:
-                    part_p.rename(p)
+                    if not p.exists():
+                        part_p.rename(p)
+                        found_target = p
+                    else:
+                        found_target = p
                 except Exception:
-                    pass
-            # 5. Fix container mismatch on the promoted file (e.g. MPEG-TS inside .mp4)
+                    found_target = part_p
+            elif p.exists() and p.stat().st_size > 0:
+                found_target = p
+
+        if not found_target:
+            cand = find_recent_output_file(str(target_path or ""))
+            if cand:
+                found_target = Path(cand)
+
+        # 5. Fix container mismatch on the promoted file (e.g. MPEG-TS inside .mp4, FLV, etc.)
+        if found_target and found_target.exists() and found_target.stat().st_size > 0:
             try:
-                if p.exists() and p.stat().st_size > 0:
-                    fixup_recorded_file(p)
+                fixed_p = fixup_recorded_file(found_target)
+                with self._lock:
+                    if job_id in self._jobs:
+                        self._jobs[job_id]["saved_path"] = str(fixed_p)
             except Exception:
                 pass
 
@@ -1788,15 +1806,17 @@ def run_ytdlp_download(
     if referer:
         cmd.extend(["--referer", referer])
 
-    cmd.extend([
+    extra_flags = [
         "--retries", "10",
         "--fragment-retries", "15",
         "--file-access-retries", "5",
         "--retry-sleep", "2",
         "--no-mtime",
-        "--newline",
         "--progress"
-    ])
+    ]
+    if on_output or progress_callback or job_id:
+        extra_flags.append("--newline")
+    cmd.extend(extra_flags)
 
     # Option injection safety: append target stream URL at the very end
     cmd.extend(["--", stream_url])
@@ -1936,16 +1956,30 @@ def run_ytdlp_download(
             retcode = proc.returncode
         except (KeyboardInterrupt, Exception):
             if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-            retcode = 1
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+            retcode = 0 if is_live else 1
     else:
-        retcode = subprocess.run(cmd, env=env).returncode
+        try:
+            retcode = subprocess.run(cmd, env=env).returncode
+        except KeyboardInterrupt:
+            if on_output:
+                on_output("[StreamVortex] Interrupted by user. Finalizing and repairing container...")
+            else:
+                print("\n[StreamVortex] Interrupted by user. Finalizing and repairing container...")
+            retcode = 0 if is_live else 1
 
     was_stopped = DOWNLOAD_MANAGER.is_stop_requested(job_id)
     actual_file = DOWNLOAD_MANAGER.get_saved_path(job_id) or last_dest_file or out_path_label
 
-    if actual_file and actual_file.startswith("Configured in"):
+    if actual_file and str(actual_file).startswith("Configured in"):
         if last_dest_file:
             actual_file = last_dest_file
         else:
@@ -1955,7 +1989,7 @@ def run_ytdlp_download(
 
     # Check whether valid output content was saved on disk
     file_exists = False
-    if actual_file and not actual_file.startswith("Configured in"):
+    if actual_file and not str(actual_file).startswith("Configured in"):
         p = Path(actual_file)
         if p.exists() and p.stat().st_size > 0:
             file_exists = True
@@ -1968,6 +2002,12 @@ def run_ytdlp_download(
                 except Exception:
                     file_exists = True
                     actual_file = str(part_p)
+
+    if not file_exists:
+        cand = find_recent_output_file(out_path_label or str(target_dir))
+        if cand:
+            actual_file = cand
+            file_exists = True
 
     # Normalize container if recorded live stream is MPEG-TS inside .mp4
     if file_exists:

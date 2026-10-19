@@ -25,7 +25,6 @@ from .config import get_download_dir, get_config, save_config, add_history_entry
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
 from .sniffer import smart_sniff
 from .recorder import copy_to_clipboard, send_notification, record_stream, wait_for_live
-from .web_ui import launch_web_ui
 from .doctor import run_doctor
 
 console = Console()
@@ -64,7 +63,6 @@ def run_wizard():
                 "🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)",
                 "📑 Batch URL Sequential Downloader (Multiple links)",
                 "📥 Change Download Destination (Drag & Drop Any Folder)",
-                "🌐 Open Web Studio (Recommended for beginners)",
                 "🎵 Extract Audio Only MP3 (via yt-dlp)",
                 "🛠️ Repair & Fix Video Containers (Fix MPEG-TS & FLV)",
                 "📁 Open Downloads Folder",
@@ -93,11 +91,6 @@ def run_wizard():
             console.print("\n[bold cyan]Launching Modern Desktop GUI Studio...[/bold cyan]")
             launch_desktop_gui()
             continue
-
-        if "Web Dashboard" in choice or "Web Studio" in choice:
-            console.print("\n[bold cyan]Starting local Web Dashboard at http://127.0.0.1:8765 ...[/bold cyan]")
-            launch_web_ui()
-            break
 
         if "Batch URL" in choice:
             _handle_batch_download()

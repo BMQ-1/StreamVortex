@@ -537,7 +537,7 @@ class TestStreamVortex(unittest.TestCase):
 
     def test_version(self):
         import ytdlp_smartstream
-        self.assertEqual(ytdlp_smartstream.__version__, "1.2")
+        self.assertEqual(ytdlp_smartstream.__version__, "1.3")
 
     def test_sniff_container(self):
         import tempfile
@@ -714,7 +714,23 @@ class TestStreamVortex(unittest.TestCase):
         self.assertTrue(built[0]["is_live"])
 
 
+    def test_desktop_studio_html_generation(self):
+        from ytdlp_smartstream.desktop import generate_studio_html
+        html = generate_studio_html()
+        self.assertIsInstance(html, str)
+        self.assertIn("StreamVortex Studio", html)
+        self.assertIn("tab-studio", html)
+        self.assertIn("tab-batch", html)
+        self.assertIn("tab-watchdog", html)
+        self.assertIn("tab-repair", html)
+        self.assertIn("tab-library", html)
+        self.assertIn("tab-settings", html)
+        self.assertIn("activeDownloadsContainer", html)
+        self.assertIn("hlsVideo", html)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

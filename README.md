@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/BMQ-1/StreamVortex/releases">
-    <img src="https://img.shields.io/badge/Version-v1.2-00f2fe?style=for-the-badge&logo=rocket" alt="Version" />
+    <img src="https://img.shields.io/badge/Version-v1.3-00f2fe?style=for-the-badge&logo=rocket" alt="Version" />
   </a>
   <a href="https://github.com/yt-dlp/yt-dlp">
     <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp" />
@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows_|_Linux_|_macOS-8A2BE2?style=for-the-badge" alt="Platform" />
   </a>
   <a href="https://github.com/BMQ-1/StreamVortex">
-    <img src="https://img.shields.io/badge/Tests-50%2F50%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-51%2F51%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests" />
   </a>
 </p>
 
@@ -34,11 +34,10 @@
 
 **StreamVortex** bridges the gap when media downloaders fail on live broadcasts, VODs, or protected HLS/DASH streams due to Akamai WAF challenges, dynamic Webcast parameters, obfuscated player tokens, or strict anti-bot firewalls.
 
-It operates seamlessly in **4 distinct modes**:
-1. 🖥️ **PyWebView Desktop Studio (v1.2)** — High-performance native desktop studio (Chromium WebView2) with embedded HLS.js video player, local CORS proxy, real-time downloads queue, and container repair tools.
-2. 🌐 **Glassmorphism Web Studio** — Embedded low-latency HLS.js live player, creator watchdog, and downloads manager accessible in any browser.
-3. ⚡ **Cyberpunk CLI & Wizard** — Interactive guided menu and high-speed command-line tooling for power users.
-4. 🔌 **Transparent `yt-dlp` Plugin** — Drop-in multi-tier extractors that enhance your standard `yt-dlp` command automatically with instant direct .m3u8 bypass.
+It operates seamlessly in **3 core modes**:
+1. 🖥️ **PyWebView Desktop Studio (v1.3)** — High-performance native desktop studio (Chromium WebView2) with embedded HLS.js video player, local CORS proxy, real-time downloads queue, and container repair tools.
+2. ⚡ **Executive Pro CLI & Control Center** — Interactive guided menu and high-speed command-line tooling for power users.
+3. 🔌 **Transparent `yt-dlp` Plugin** — Drop-in multi-tier extractors that enhance your standard `yt-dlp` command automatically with instant direct .m3u8 bypass.
 
 ---
 

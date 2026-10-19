@@ -14,8 +14,8 @@ if sys.platform == "win32":
         pass
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.1.2")
-        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v1.2")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.1.3")
+        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v1.3")
         
         # Apply icon to console window
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()

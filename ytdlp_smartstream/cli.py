@@ -31,7 +31,6 @@ from rich.text import Text
 from .sniffer import smart_sniff
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video, TikTokMediaResult
 from .recorder import copy_to_clipboard, send_notification, record_stream, wait_for_live
-from .web_ui import launch_web_ui
 from .engine import find_ytdlp_conf, sanitize_title_for_filename, run_ytdlp_download, resolve_stream_metadata
 
 console = Console()
@@ -51,7 +50,7 @@ def print_banner(conf_path: Optional[str] = None):
     conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle=f"[bold white]v1.2[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
+        subtitle=f"[bold white]v1.3[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -102,7 +101,7 @@ def main():
     parser.add_argument("--gui", "-g", action="store_true", help="Launch modern dark-mode Desktop GUI window")
     parser.add_argument("--setup", action="store_true", help="Verify and configure media tools (yt-dlp, FFmpeg, Playwright)")
     parser.add_argument("--onboard", "--install-tools", action="store_true", help="Launch 1-click installer wizard for yt-dlp, FFmpeg, Python, VLC")
-    parser.add_argument("--web", action="store_true", help="Launch the local Dark-Mode Web UI with embedded HLS player")
+    parser.add_argument("--web", action="store_true", help="Alias for --gui: Launch modern Desktop Studio GUI window")
     parser.add_argument("--audio", "-a", action="store_true", help="Extract audio only (MP3) from stream or video")
     parser.add_argument("--doctor", action="store_true", help="Run system diagnostics and dependency check")
     parser.add_argument("--wizard", action="store_true", help="Launch beginner-friendly interactive menu")
@@ -202,8 +201,8 @@ def main():
             run_cli_onboarding()
         return
 
-    # Modern Desktop GUI window
-    if args.gui:
+    # Modern Desktop GUI window (handles both --gui and legacy --web)
+    if args.gui or args.web:
         from .desktop import launch_desktop_gui
         launch_desktop_gui()
         return
@@ -212,11 +211,6 @@ def main():
     if args.doctor:
         from .doctor import run_doctor
         run_doctor()
-        return
-
-    # Launch Web UI
-    if args.web:
-        launch_web_ui()
         return
 
     # Explicit wizard mode
