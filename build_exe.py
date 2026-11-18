@@ -58,27 +58,23 @@ def build():
         "--collect-all", "PIL",
     ]
 
-    # Add official icon
-    ico_file = root / "StreamVortex.ico"
-    if ico_file.exists():
-        cmd.extend(["--icon", str(ico_file)])
+    # Add official icon (relative path keeps generated StreamVortex.spec portable)
+    if (root / "StreamVortex.ico").exists():
+        cmd.extend(["--icon", "StreamVortex.ico"])
 
     # Add Windows version info resource
-    version_file = root / "version_info.txt"
-    if version_file.exists():
-        cmd.extend(["--version-file", str(version_file)])
+    if (root / "version_info.txt").exists():
+        cmd.extend(["--version-file", "version_info.txt"])
 
     # Add assets directory
-    assets_dir = root / "assets"
-    if assets_dir.exists():
-        cmd.extend(["--add-data", f"{assets_dir};assets"])
+    if (root / "assets").exists():
+        cmd.extend(["--add-data", "assets;assets"])
 
     # Optional local conf
-    conf_file = root / "yt-dlp.conf"
-    if conf_file.exists():
-        cmd.extend(["--add-data", f"{conf_file};."])
+    if (root / "yt-dlp.conf").exists():
+        cmd.extend(["--add-data", "yt-dlp.conf;."])
 
-    cmd.append(str(main_file))
+    cmd.append("main_entry.py")
 
     print("[Build] Executing PyInstaller compilation with icon and assets...")
     res = subprocess.run(cmd, cwd=str(root))

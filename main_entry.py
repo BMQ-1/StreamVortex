@@ -14,8 +14,8 @@ if sys.platform == "win32":
         pass
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.1.3")
-        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v1.3")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("StreamVortex.2.0")
+        ctypes.windll.kernel32.SetConsoleTitleW("StreamVortex v2.0")
         
         # Apply icon to console window
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
@@ -60,6 +60,12 @@ import multiprocessing
 from ytdlp_smartstream.cli import main
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v", "-V"):
+        print("StreamVortex 2.0")
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[1] == "-m" and sys.argv[2] == "yt_dlp":
+        import yt_dlp
+        sys.exit(yt_dlp.main(sys.argv[3:]))
     multiprocessing.freeze_support()
     main()
 

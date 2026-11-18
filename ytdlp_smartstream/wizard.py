@@ -26,6 +26,7 @@ from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video
 from .sniffer import smart_sniff
 from .recorder import copy_to_clipboard, send_notification, record_stream, wait_for_live
 from .doctor import run_doctor
+from .engine import clean_target_url
 
 console = Console()
 
@@ -137,8 +138,8 @@ def run_wizard():
                 run_plugin_install()
             else:
                 console.print("[yellow][!] Running setup installer fallback...[/yellow]")
-                from .setup_binaries import check_and_install_dependencies
-                check_and_install_dependencies()
+                from .setup_binaries import setup_all_binaries
+                setup_all_binaries()
             questionary.press_any_key_to_continue().ask()
             continue
 
@@ -218,7 +219,7 @@ def _handle_quick_sniff():
     if not url or not url.strip():
         return
 
-    url = url.strip()
+    url = clean_target_url(url.strip())
     with console.status("[bold cyan]Sniffing media wire for live streams...[/bold cyan]"):
         sniffed = smart_sniff(url)
 
@@ -334,7 +335,7 @@ def _handle_audio_extract():
     url = questionary.text("Enter stream or video URL to extract MP3 from:").ask()
     if not url or not url.strip():
         return
-    url = url.strip()
+    url = clean_target_url(url.strip())
 
     console.print("\n[bold cyan]Extracting audio track as MP3...[/bold cyan]")
     from .engine import run_ytdlp_download
@@ -364,12 +365,14 @@ def _handle_batch_download():
         if not p.exists():
             console.print(f"[red][!] File not found: {p}[/red]")
             return
-        urls = [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip() and line.strip().startswith("http")]
+        urls = [clean_target_url(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+        urls = [u for u in urls if u.startswith(("http://", "https://", "smart:"))]
     else:
         raw = questionary.text("Enter URLs separated by spaces or commas:").ask()
         if not raw:
             return
-        urls = [u.strip() for u in raw.replace(",", " ").split() if u.strip().startswith("http")]
+        urls = [clean_target_url(u) for u in raw.replace(",", " ").split() if u.strip()]
+        urls = [u for u in urls if u.startswith(("http://", "https://", "smart:"))]
 
     if not urls:
         console.print("[yellow][!] No valid URLs provided.[/yellow]")

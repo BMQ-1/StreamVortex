@@ -485,6 +485,31 @@ class TestStreamVortex(unittest.TestCase):
             self.assertFalse(part_file.exists())
             self.assertEqual(target_file.read_bytes(), b"recorded live chunk data")
 
+    def test_stop_job_process_tree_termination(self):
+        from ytdlp_smartstream.engine import DownloadManager
+        from unittest.mock import MagicMock, patch
+        dm = DownloadManager()
+        dm.start_job("job-proc-test", "Process Test", "https://example.com/test", is_live=True)
+
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, None, 0]  # running when polled initially
+        mock_proc.pid = 99999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.closed = False
+
+        dm.register_process("job-proc-test", mock_proc)
+
+        with patch("subprocess.run") as mock_subrun:
+            dm.stop_job("job-proc-test")
+            self.assertTrue(dm.is_stop_requested("job-proc-test"))
+            mock_proc.terminate.assert_called()
+            if sys.platform == "win32":
+                mock_subrun.assert_called()
+                call_args = mock_subrun.call_args[0][0]
+                self.assertIn("taskkill", call_args)
+                self.assertIn("/T", call_args)
+                self.assertIn("99999", call_args)
+
     def test_find_aria2c_decommissioned(self):
         from ytdlp_smartstream.engine import find_aria2c
         self.assertIsNone(find_aria2c(), "aria2c must be decommissioned and return None")
@@ -537,7 +562,7 @@ class TestStreamVortex(unittest.TestCase):
 
     def test_version(self):
         import ytdlp_smartstream
-        self.assertEqual(ytdlp_smartstream.__version__, "1.3")
+        self.assertEqual(ytdlp_smartstream.__version__, "2.0")
 
     def test_sniff_container(self):
         import tempfile
@@ -727,6 +752,215 @@ class TestStreamVortex(unittest.TestCase):
         self.assertIn("tab-settings", html)
         self.assertIn("activeDownloadsContainer", html)
         self.assertIn("hlsVideo", html)
+
+
+    def test_tiktok_media_result_direct_url(self):
+        from ytdlp_smartstream.tiktok_resolver import TikTokMediaResult, StreamQuality
+        sq = StreamQuality(quality_id="hls-origin", url="https://example.com/live.m3u8", protocol="m3u8_native", ext="mp4")
+        res = TikTokMediaResult(media_id="123", uploader="testuser", title="Test Live", is_live=True, formats=[sq])
+        self.assertEqual(res.direct_url, "https://example.com/live.m3u8")
+
+    def test_config_clear_history(self):
+        from ytdlp_smartstream.config import add_history_entry, get_history, clear_history
+        add_history_entry("Test Video", "test.mp4", "https://example.com")
+        self.assertGreater(len(get_history()), 0)
+        self.assertTrue(clear_history())
+        self.assertEqual(len(get_history()), 0)
+
+    def test_desktop_api_inspect_file_container(self):
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        import tempfile
+        api = StreamVortexApi(port=8765)
+        self.assertTrue(hasattr(api, "inspect_file_container"))
+        self.assertTrue(hasattr(api, "inspect_container"))
+        with tempfile.NamedTemporaryFile("wb", suffix=".mp4", delete=False) as tf:
+            tf.write(b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 1000)
+            tf_path = tf.name
+        try:
+            info = api.inspect_file_container(tf_path)
+            self.assertIn("size_formatted", info)
+            self.assertIn("size_mb", info)
+            self.assertEqual(info["extension"], "mp4")
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
+    def test_setup_binaries_alias(self):
+        from ytdlp_smartstream.setup_binaries import check_and_install_dependencies, setup_all_binaries
+        self.assertEqual(check_and_install_dependencies, setup_all_binaries)
+
+    def test_finish_job_preserves_stopped_status(self):
+        from ytdlp_smartstream.engine import DownloadManager
+        dm = DownloadManager()
+        dm.start_job("job-stop-test", "Stop Test", "https://example.com", is_live=True)
+        dm.update_job("job-stop-test", progress=42.5)
+        dm.stop_job("job-stop-test")
+        dm.finish_job("job-stop-test", success=True)
+        job = dm.get_job("job-stop-test")
+        self.assertEqual(job["status"], "stopped")
+        self.assertEqual(job["progress"], 42.5)
+
+    def test_clean_target_url_autoprefix_domain(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        self.assertEqual(clean_target_url("tiktok.com/@user/live"), "https://tiktok.com/@user/live")
+        self.assertEqual(clean_target_url("www.youtube.com/watch?v=12345"), "https://www.youtube.com/watch?v=12345")
+
+    def test_clean_target_url_strips_tracking_query(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        raw = "https://www.tiktok.com/@user/live?utm_source=share&utm_medium=ios_app&tt_from=copy&checksum=abc1234&sender_device=pc"
+        cleaned = clean_target_url(raw)
+        self.assertNotIn("utm_source", cleaned)
+        self.assertNotIn("tt_from", cleaned)
+        self.assertNotIn("checksum", cleaned)
+        self.assertTrue(cleaned.startswith("https://www.tiktok.com/@user/live"))
+
+    def test_clean_target_url_preserves_special_schemes(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        self.assertEqual(clean_target_url("smart:https://example.com/playlist.m3u8"), "smart:https://example.com/playlist.m3u8")
+        self.assertEqual(clean_target_url("sniff:https://example.com/stream"), "sniff:https://example.com/stream")
+
+    def test_clean_target_url_option_injection_guard(self):
+        from ytdlp_smartstream.engine import clean_target_url
+        self.assertFalse(clean_target_url("--exec=calc.exe").startswith("-"))
+
+    def test_install_aria2c_engine_decommissioned(self):
+        from ytdlp_smartstream.onboarding import install_aria2c_engine
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            ok, msg = install_aria2c_engine(Path(td))
+            self.assertTrue(ok)
+            self.assertIn("Native multi-threading active", msg)
+
+    def test_cli_version_flag(self):
+        import subprocess
+        res = subprocess.run([sys.executable, "main_entry.py", "--version"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("StreamVortex 2.0", res.stdout)
+
+    def test_desktop_repair_container_nonexistent(self):
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        api = StreamVortexApi(None)
+        res = api.repair_container("C:/nonexistent_file_12345.mp4")
+        self.assertIn("error", res)
+
+    def test_parse_speed_to_bps(self):
+        from ytdlp_smartstream.engine import parse_speed_to_bps
+        self.assertAlmostEqual(parse_speed_to_bps("10.0MiB/s"), 10.0 * 1024 * 1024, delta=10.0)
+        self.assertAlmostEqual(parse_speed_to_bps("2.5 MB/s"), 2.5 * 1000 * 1000, delta=10.0)
+        self.assertAlmostEqual(parse_speed_to_bps("1.01x (2400kbits/s)"), 300000.0, delta=10.0)
+        self.assertEqual(parse_speed_to_bps("--"), 0.0)
+
+    def test_download_manager_serializable_telemetry_and_logs(self):
+        import json
+        from unittest.mock import MagicMock
+        from ytdlp_smartstream.engine import DownloadManager
+        dm = DownloadManager()
+        dm.start_job("ser-1", "Broadcast Test", "https://example.com/live.m3u8", is_live=True, options={"quality": "max"})
+        dm.register_process("ser-1", MagicMock())
+        dm.update_job("ser-1", progress=45.5, speed="8.0MiB/s", size="42.1 MB", status="Downloading")
+        dm.append_log("ser-1", "[download] 45.5% of 100MiB at 8.0MiB/s")
+
+        ser = dm.get_serializable_jobs()
+        self.assertEqual(len(ser), 1)
+        self.assertNotIn("process", ser[0])
+        self.assertEqual(ser[0]["percent"], 45.5)
+        dumped = json.dumps(ser)
+        self.assertIn("Broadcast Test", dumped)
+
+        telemetry = dm.get_telemetry_snapshot()
+        self.assertEqual(telemetry["active_count"], 1)
+        self.assertGreater(telemetry["current_mbps"], 7.5)
+
+        logs = dm.get_console_logs()
+        self.assertTrue(any("45.5%" in l["line"] for l in logs))
+
+        dm.finish_job("ser-1", success=True)
+        done = dm.get_serializable_job("ser-1")
+        self.assertTrue(done["completed"])
+        self.assertTrue(done["success"])
+        self.assertEqual(done["percent"], 100.0)
+
+    def test_scan_folder_for_repairs(self):
+        import tempfile
+        from ytdlp_smartstream.engine import scan_folder_for_repairs
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            (td_p / "clean.mp4").write_bytes(b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2mp41" + b"\x00" * 200)
+            packet = bytes([0x47]) + bytes(187)
+            (td_p / "broken_live.mp4").write_bytes(packet * 8)
+            (td_p / "legacy.flv").write_bytes(b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00" + b"\x00" * 64)
+
+            items = scan_folder_for_repairs(td_p)
+            self.assertEqual(len(items), 3)
+            by_name = {i["filename"]: i for i in items}
+            self.assertFalse(by_name["clean.mp4"]["is_mismatched"])
+            self.assertTrue(by_name["broken_live.mp4"]["is_mismatched"])
+            self.assertTrue(by_name["legacy.flv"]["is_mismatched"])
+
+    def test_desktop_api_watchdog_and_diagnostics(self):
+        from ytdlp_smartstream.desktop import StreamVortexApi
+        api = StreamVortexApi(port=8765)
+
+        diag = api.run_inline_diagnostics()
+        self.assertIn("rows", diag)
+        self.assertGreaterEqual(len(diag["rows"]), 6)
+
+        conf = api.get_ytdlp_conf()
+        self.assertIn("content", conf)
+
+        api.add_to_watchlist("https://www.twitch.tv/test_sv_channel_99", platform="twitch", auto_record=True)
+        snap = api.get_watchdog_state()
+        found = next((i for i in snap["items"] if i["handle"] == "test_sv_channel_99"), None)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["platform"], "twitch")
+        self.assertTrue(found["auto_record"])
+        api.remove_from_watchlist("test_sv_channel_99", platform="twitch")
+
+    def test_desktop_http_local_media_range_streaming(self):
+        import threading
+        import tempfile
+        import urllib.request
+        import urllib.parse
+        from ytdlp_smartstream.desktop import ReusableThreadingHTTPServer, StreamVortexHttpHandler, StreamVortexApi, find_free_port
+
+        port = find_free_port(8910)
+        server = ReusableThreadingHTTPServer(("127.0.0.1", port), StreamVortexHttpHandler)
+        StreamVortexHttpHandler.api = StreamVortexApi(port=port)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
+                payload = b"\x00\x00\x00\x20ftypisom" + (b"ABCDEFGH" * 100)
+                tf.write(payload)
+                media_path = tf.name
+            try:
+                url = f"http://127.0.0.1:{port}/api/media?path={urllib.parse.quote(media_path, safe='')}"
+                req = urllib.request.Request(url, headers={"Range": "bytes=0-31"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    self.assertEqual(resp.status, 206)
+                    chunk = resp.read()
+                    self.assertEqual(len(chunk), 32)
+                    self.assertEqual(chunk, payload[:32])
+            finally:
+                Path(media_path).unlink(missing_ok=True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_studio_ui_pro_components(self):
+        from ytdlp_smartstream.studio_ui import generate_studio_html
+        html = generate_studio_html()
+        for token in [
+            "throughputSvg",
+            "cmdPaletteBackdrop",
+            "consoleLogBox",
+            "playlistSection",
+            "clipStartInput",
+            "clipEndInput",
+            "confEditorArea",
+            "diagTableBody",
+            "watchdogEnabledToggle",
+        ]:
+            self.assertIn(token, html)
 
 
 if __name__ == "__main__":

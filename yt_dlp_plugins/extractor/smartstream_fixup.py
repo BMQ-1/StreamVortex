@@ -117,8 +117,6 @@ def find_ffmpeg():
     # 3. Standard Windows installation paths
     user_home = os.path.expanduser('~')
     candidates = [
-        r"C:\ffmpeg_folder\ffmpeg-essentials_build\bin\ffmpeg.exe",
-        r"C:\ffmpeg_folder\bin\ffmpeg.exe",
         r"C:\Tools\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",

@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/BMQ-1/StreamVortex/releases">
-    <img src="https://img.shields.io/badge/Version-v1.3-00f2fe?style=for-the-badge&logo=rocket" alt="Version" />
+    <img src="https://img.shields.io/badge/Version-v2.0-00f2fe?style=for-the-badge&logo=rocket" alt="Version" />
   </a>
   <a href="https://github.com/yt-dlp/yt-dlp">
     <img src="https://img.shields.io/badge/Powered_By-yt--dlp-ff0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp" />
@@ -11,13 +11,13 @@
     <img src="https://img.shields.io/badge/Python-3.9_|_3.10_|_3.11_|_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-success?style=for-the-badge" alt="License" />
+    <img src="https://img.shields.io/badge/License-MIT-success?style=for-the-badge&logo=MIT" alt="License" />
   </a>
   <a href="https://github.com/BMQ-1/StreamVortex">
-    <img src="https://img.shields.io/badge/Platform-Windows_|_Linux_|_macOS-8A2BE2?style=for-the-badge" alt="Platform" />
+    <img src="https://img.shields.io/badge/Platform-Windows_|_Linux_|_macOS-8A2BE2?style=for-the-badge&logo=platform" alt="Platform" />
   </a>
   <a href="https://github.com/BMQ-1/StreamVortex">
-    <img src="https://img.shields.io/badge/Tests-51%2F51%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-70%2F70%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests" />
   </a>
 </p>
 
@@ -35,7 +35,7 @@
 **StreamVortex** bridges the gap when media downloaders fail on live broadcasts, VODs, or protected HLS/DASH streams due to Akamai WAF challenges, dynamic Webcast parameters, obfuscated player tokens, or strict anti-bot firewalls.
 
 It operates seamlessly in **3 core modes**:
-1. 🖥️ **PyWebView Desktop Studio (v1.3)** — High-performance native desktop studio (Chromium WebView2) with embedded HLS.js video player, local CORS proxy, real-time downloads queue, and container repair tools.
+1. 🖥️ **PyWebView Desktop Studio (v2.0)** — Broadcast-grade native desktop studio (Chromium WebView2) with embedded HLS.js & local Range video monitor, live throughput oscilloscope, interactive clip trimmer, playlist picker, background multi-platform watchdog, ffprobe container inspector, live engine console, and built-in `yt-dlp.conf` editor.
 2. ⚡ **Executive Pro CLI & Control Center** — Interactive guided menu and high-speed command-line tooling for power users.
 3. 🔌 **Transparent `yt-dlp` Plugin** — Drop-in multi-tier extractors that enhance your standard `yt-dlp` command automatically with instant direct .m3u8 bypass.
 
@@ -51,16 +51,13 @@ It operates seamlessly in **3 core modes**:
   * Detects or installs official **Python 3.11** runtime and **VLC Media Player**.
   * Safely registers tools in Windows User PATH without requiring Administrator privileges.
 * **🖥️ PyWebView Desktop Studio (`streamvortex --gui`):**
-  * **Live Stream Preview**: Embedded HLS.js player with real-time video playback and local CORS bypass proxy.
-  * **Direct .m3u8/HLS Bypass**: Instant manifest parsing without slow headless browser overhead.
-  * **Container Health & Repair**: Inspect corrupt media files and remux invalid MP4/MKV/TS/AAC headers in 1 click using FFmpeg. Automatically normalizes legacy `.flv` videos into fully playable modern `.mp4` or `.mkv` files.
-  * **Auto-Clipboard Monitor & Drag-Drop**: Drag URLs or media files directly into the window or copy links to inspect immediately.
-  * **Multi-Format Selector**: One-click download presets for Best Video, 1080p, 720p, 480p, and MP3/M4A audio extraction.
-  * **Creator Watchdog**: Monitor live channels and auto-trigger lossless recording the second creators go live.
-* **🌐 Web Studio Dashboard (`streamvortex --web`):**
-  * Embedded **HLS.js Live Player** with low-latency real-time preview and CORS proxy.
-  * **Live Watchdog Tab**: Monitor multiple creators and track online/offline status automatically.
-  * **Downloads Explorer Tab**: View saved media, check file sizes, and open them in your default player.
+  * **Broadcast Monitor & Inline Playback**: Embedded HLS.js & HTTP 206 Range local video player with Mark-In / Mark-Out clip trimming and live format matrix.
+  * **Live Telemetry & Engine Console**: Real-time throughput oscilloscope (`MB/s` current & peak), concurrent batch queue (1–4 workers) with 1-click Retry, and live `yt-dlp`/`FFmpeg` console logs.
+  * **Direct .m3u8/HLS Bypass & Playlist Picker**: Instant manifest parsing without slow headless browser overhead, plus flat-playlist item selection.
+  * **Deep `ffprobe` Container Inspector & Batch Folder Repair**: Inspect codecs, resolution, FPS, bitrate, and duration; scan entire folders for broken `.part`/`.flv`/MPEG-TS files and remux to faststart MP4/MKV or extract MP3/M4A audio.
+  * **Auto-Clipboard Watch, Drag-Drop & `Ctrl+K` Command Palette**: Automatic URL detection from clipboard, drag-drop media/URLs anywhere, and keyboard-first navigation.
+  * **Background Multi-Platform Creator Watchdog**: Background daemon monitoring TikTok, Twitch, Kick, YouTube, and direct URLs with per-creator auto-record and desktop notifications.
+  * **Built-In `yt-dlp.conf` Editor & Browser Cookie Auth**: Edit `yt-dlp.conf` directly inside Settings, enable Chrome/Edge/Firefox/Brave cookies, set bandwidth caps/proxies, view inline diagnostics, and update `yt-dlp` in 1 click.
 * **🔌 Native `yt-dlp` Terminal Integration:**
   * Uses standard `yt-dlp <URL>` seamlessly in your terminal.
   * Overrides broken built-in extractors with resilient multi-tier scrapers.
@@ -85,24 +82,7 @@ It operates seamlessly in **3 core modes**:
 ---
 
 ### Option 2: Run via One-Click Launcher (`Launch StreamVortex.bat`)
-Double-click `Launch StreamVortex.bat` (or drag & drop any URL or media file onto it). The launcher includes automatic Python discovery (3.9–3.13), UTF-8 encoding support, drag-and-drop repair, and launches the exact same interactive CLI with Up/Down arrow navigation as `StreamVortex.exe`:
-```text
-? What would you like to do? (Use ↑/↓ arrow keys to navigate, Enter to select)
-❯ 🖥️ Open Modern Desktop GUI Studio (Full Window)
-  ⚡ Quick Stream Sniffer & Downloader (Paste any URL)
-  🔴 TikTok Live Downloader / Watchdog (yt-dlp Engine)
-  📑 Batch URL Sequential Downloader (Multiple links)
-  📥 Change Download Destination (Drag & Drop Any Folder)
-  🌐 Open Web Studio (Recommended for beginners)
-  🎵 Extract Audio Only MP3 (via yt-dlp)
-  🛠️ Repair & Fix Video Containers (Fix MPEG-TS & FLV)
-  📁 Open Downloads Folder
-  🩺 System Diagnostics & yt-dlp Health Check
-  🔌 Sync & Install Native yt-dlp Roaming Plugin
-  📦 Build Standalone Executable (StreamVortex.exe)
-  🚀 Zero-Setup Onboarding (Install yt-dlp, FFmpeg, Python, VLC)
-  🚪 Exit
-```
+Double-click `Launch StreamVortex.bat` (or drag & drop any URL or media file onto it). The launcher includes automatic Python discovery (3.9–3.13), UTF-8 encoding support, drag-and-drop repair, and launches the exact same interactive CLI with Up/Down arrow navigation as `StreamVortex.exe`.
 
 ---
 
@@ -118,9 +98,6 @@ pip install -e .
 
 # Launch Desktop GUI Studio
 streamvortex --gui
-
-# Or launch Web Studio
-streamvortex --web
 
 # Or run interactive terminal wizard
 streamvortex
@@ -140,7 +117,7 @@ yt-dlp "https://www.tiktok.com/@username/live"
 yt-dlp "smart:https://some-stream-site.com/live/channel"
 ```
 
-### 2. StreamVortex Cyberpunk CLI
+### 2. StreamVortex CLI
 ```bash
 # Inspect stream and view multi-bitrate resolution table
 streamvortex "https://www.tiktok.com/@username/live"
@@ -163,9 +140,6 @@ streamvortex -w -r "https://www.tiktok.com/@username/live"
 # Launch Modern Desktop GUI Studio
 streamvortex --gui
 
-# Launch Modern Web Studio Dashboard
-streamvortex --web
-
 # Run system health diagnostics
 streamvortex --doctor
 
@@ -186,12 +160,12 @@ StreamVortex/
 ├── setup.py                      # Setuptools configuration
 │
 ├── ytdlp_smartstream/            # Core Application Package
-│   ├── desktop.py                # Modern Desktop GUI Studio (ttkbootstrap)
-│   ├── web_ui.py                 # Glassmorphism Web Studio & HLS.js live player
+│   ├── desktop.py                # Desktop GUI Studio Host (pywebview + multi-threaded server + watchdog)
+│   ├── studio_ui.py              # Broadcast Control-Room Studio Frontend & HLS/Local Monitor
 │   ├── onboarding.py             # 1-Click zero-setup binary installer GUI
 │   ├── setup_binaries.py         # Automated yt-dlp & FFmpeg downloader
-│   ├── engine.py                 # Core media detection and execution engine
-│   ├── cli.py                    # Cyberpunk rich terminal interface
+│   ├── engine.py                 # Core media detection, ffprobe, telemetry & execution engine
+│   ├── cli.py                    # Rich terminal interface
 │   ├── wizard.py                 # Interactive terminal wizard
 │   ├── doctor.py                 # System health and diagnostic auditor
 │   ├── config.py                 # Configuration, history, and creator watchlist
@@ -200,9 +174,11 @@ StreamVortex/
 │   └── recorder.py               # Lossless live recording & notifications
 │
 └── yt_dlp_plugins/               # Native yt-dlp Plugin Package
-    └── extractor/
-        ├── tiktok_smart.py       # Enhanced TikTok Live & VOD extractor
-        └── universal_smart.py    # Universal 'smart:' stream sniffer extractor
+    ├── extractor/
+    │   ├── tiktok_smart.py       # Enhanced TikTok Live & VOD extractor
+    │   └── universal_smart.py    # Universal 'smart:' stream sniffer extractor
+    └── postprocessor/
+        └── smartstream_fixup.py  # Lossless container fixup postprocessor
 ```
 
 ---
@@ -211,7 +187,7 @@ StreamVortex/
 
 1. **Multi-Tier Resolution**: When given a live URL, StreamVortex tries lightweight static room metadata first. If challenges (Akamai/WAF/Bot-detection) are encountered, it automatically escalates to a Playwright headless Chromium browser session to sniff real `.m3u8` master playlists directly from CDP network traffic.
 2. **Lossless Capture**: StreamVortex pipes validated master playlists directly to `yt-dlp` or `ffmpeg -c copy`, ensuring byte-for-byte stream capture without quality loss or re-encoding overhead.
-3. **Smart Watchdog**: Periodically polls creator status with jittered backoff to avoid rate limits, instantly triggering recording the second an offline creator goes live.
+3. **Smart Watchdog**: Periodically polls creator status across platforms in the background, alerting via desktop notifications and triggering lossless recording the second an offline creator goes live.
 4. **Zero-Setup Environment**: If `yt-dlp` or `ffmpeg` are missing from your PATH, StreamVortex downloads the official portable builds into a local directory and configures everything automatically.
 
 ---

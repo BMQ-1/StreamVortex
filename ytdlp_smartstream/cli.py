@@ -31,7 +31,7 @@ from rich.text import Text
 from .sniffer import smart_sniff
 from .tiktok_resolver import resolve_tiktok_live, resolve_tiktok_video, TikTokMediaResult
 from .recorder import copy_to_clipboard, send_notification, record_stream, wait_for_live
-from .engine import find_ytdlp_conf, sanitize_title_for_filename, run_ytdlp_download, resolve_stream_metadata
+from .engine import find_ytdlp_conf, sanitize_title_for_filename, run_ytdlp_download, resolve_stream_metadata, clean_target_url
 
 console = Console()
 
@@ -50,7 +50,7 @@ def print_banner(conf_path: Optional[str] = None):
     conf_label = f" [bold yellow]| Config: {conf.name}[/bold yellow]" if conf else ""
     panel = Panel(
         Text(BANNER, style="bold cyan"),
-        subtitle=f"[bold white]v1.3[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
+        subtitle=f"[bold white]v2.0[/bold white] [dim]| Powered by [bold cyan]yt-dlp[/bold cyan] // Resilient Stream Intelligence Engine[/dim]{conf_label}",
         border_style="bright_blue",
         padding=(0, 2)
     )
@@ -88,11 +88,15 @@ def display_formats_table(media: TikTokMediaResult):
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "-m" and sys.argv[2] == "yt_dlp":
+        import yt_dlp
+        sys.exit(yt_dlp.main(sys.argv[3:]))
     parser = argparse.ArgumentParser(
         prog="streamvortex",
         description="StreamVortex // Powered by yt-dlp - Resilient Stream Extraction & Watchdog Engine"
     )
     parser.add_argument("url", nargs="?", default="", help="Target live or video URL")
+    parser.add_argument("--version", "-v", action="version", version="StreamVortex 2.0")
     parser.add_argument("--download", "-d", action="store_true", help="Download stream using yt-dlp")
     parser.add_argument("--record", "-r", action="store_true", help="Record live stream with FFmpeg auto-reconnect")
     parser.add_argument("--play", "-p", action="store_true", help="Play stream in MPV or VLC player")
@@ -227,9 +231,9 @@ def main():
         run_wizard()
         return
 
-    url = args.url.strip()
+    url = clean_target_url(args.url)
 
-    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("smart:")):
+    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("smart:") or url.startswith("sniff:")):
         console.print(f"[red][!] Invalid URL format: '{url}'. Please enter a full URL (e.g. https://www.tiktok.com/@username/live)[/red]")
         return
 
@@ -370,10 +374,25 @@ def main():
 
     if not sniffed:
         meta = resolve_stream_metadata(url, timeout=args.timeout)
-        if meta and meta.get("title") != "stream_media" and (args.download or args.audio or args.play):
+        if meta and meta.get("title") != "stream_media":
+            direct_u = meta.get("direct_url") or (meta.get("formats")[0]["url"] if meta.get("formats") else url)
+            if args.m3u8_only:
+                print(direct_u)
+                return
+
+            if args.json:
+                print(json.dumps(meta, indent=2))
+                return
+
+            if args.copy:
+                copy_to_clipboard(direct_u)
+                console.print(f"[bold green][+] Stream URL copied to clipboard![/bold green]")
+                return
+
             console.print(f"\n[bold green][+] RECOGNIZED MEDIA TARGET:[/bold green] [bold white]{meta['title']}[/bold white]")
             if meta.get("uploader"):
                 console.print(f"[dim]Uploader:[/dim] @{meta['uploader']}")
+
             if args.download or args.audio:
                 _download(
                     url,
@@ -387,8 +406,26 @@ def main():
                 )
                 return
             elif args.play:
-                _play(url)
+                _play(direct_u)
                 return
+
+            if meta.get("formats"):
+                table = Table(
+                    title=f"Available Formats for [bold cyan]{meta.get('title')}[/bold cyan]",
+                    border_style="bright_blue",
+                    header_style="bold magenta",
+                    show_lines=True
+                )
+                table.add_column("Format ID", style="bold green")
+                table.add_column("Protocol", style="cyan")
+                table.add_column("Resolution", style="yellow")
+                table.add_column("Note", style="italic")
+                for f in meta.get("formats", []):
+                    res = f"{f.get('height')}p" if f.get('height') else "Auto"
+                    table.add_row(str(f.get("id", "fmt")), str(f.get("protocol", "https")), res, str(f.get("format_note", "")))
+                console.print(table)
+            console.print("\n[dim]Tip: Add -d to download, -a for audio MP3, -p to play, or -c to copy URL.[/dim]\n")
+            return
         console.print("[red][-] No active HLS/FLV/DASH stream detected on page.[/red]", file=sys.stderr)
         sys.exit(1)
 

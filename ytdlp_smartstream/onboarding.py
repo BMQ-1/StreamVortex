@@ -6,7 +6,7 @@ Features:
 - Detects missing tools (yt-dlp, FFmpeg, Python, VLC/MPV, yt-dlp.conf).
 - Asks or selects dedicated tools folder (e.g. C:\\Tools or %USERPROFILE%\\Tools).
 - Downloads official yt-dlp.exe, ffmpeg.exe, ffprobe.exe directly from official channels.
-- Installs StreamVortex's optimized yt-dlp.conf and tiktok-live.conf presets directly next to yt-dlp.exe.
+- Installs StreamVortex's optimized yt-dlp.conf preset directly next to yt-dlp.exe.
 - Installs or checks global Python (python.org official installer).
 - Checks for VLC / MPV, installs official VLC Media Player if missing.
 - Safely registers tools directory in Windows User PATH.
@@ -135,7 +135,7 @@ def download_file_with_feedback(
 
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamVortex/1.3.0"}
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamVortex/2.0.0"}
         )
 
         with urllib.request.urlopen(req) as resp:
@@ -225,7 +225,6 @@ def install_ffmpeg_suite(tools_dir: Path, callback: Optional[Callable[[str, floa
         if zip_path.exists():
             zip_path.unlink()
 
-        # Verify
         res = subprocess.run([str(ffmpeg_exe), "-version"], capture_output=True, text=True, timeout=5)
         ver = res.stdout.splitlines()[0] if res.stdout else "Available"
         if callback:
@@ -237,48 +236,12 @@ def install_ffmpeg_suite(tools_dir: Path, callback: Optional[Callable[[str, floa
 
 def install_aria2c_engine(tools_dir: Path, callback: Optional[Callable[[str, float], None]] = None) -> Tuple[bool, str]:
     """
-    Downloads the official portable aria2c.exe download accelerator and places it next to yt-dlp.exe.
-    This enables yt-dlp's 16-connection multi-threaded acceleration configured in yt-dlp.conf.
+    External aria2c is decommissioned in favor of yt-dlp's native multi-threading (-N 6)
+    to eliminate CVE risks and HLS chunk freezing.
     """
-    from .engine import find_aria2c
-    existing = find_aria2c()
-    if existing:
-        if callback:
-            callback(f"[+] aria2c accelerator already available: {existing}", 100.0)
-        return True, existing
-
-    zip_path = tools_dir / "aria2_temp.zip"
-    aria2_exe = tools_dir / "aria2c.exe"
-
     if callback:
-        callback("Downloading official portable aria2c download accelerator...", 10.0)
-
-    success = download_file_with_feedback(
-        ARIA2C_RELEASE_URL,
-        zip_path,
-        label="aria2c Accelerator",
-        callback=callback
-    )
-    if not success:
-        return False, "Failed to download aria2c archive."
-
-    try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            for member in z.namelist():
-                if member.endswith("aria2c.exe"):
-                    with z.open(member) as src, open(aria2_exe, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    break
-        if zip_path.exists():
-            zip_path.unlink()
-        if aria2_exe.exists():
-            if callback:
-                callback(f"[+] Installed aria2c.exe into {tools_dir}!", 100.0)
-            return True, str(aria2_exe)
-    except Exception as e:
-        return False, f"aria2c extraction error: {e}"
-
-    return False, "aria2c.exe not found in downloaded archive."
+        callback("[+] Native multi-threading active (-N 6). External aria2c bypassed.", 100.0)
+    return True, "Native multi-threading active (-N 6)"
 
 
 def install_optimized_configs(
@@ -288,16 +251,12 @@ def install_optimized_configs(
 ) -> Tuple[bool, str]:
     """
     Deploys the standard yt-dlp.conf directly next to yt-dlp.exe in tools_dir (e.g. C:\\Tools\\yt-dlp.conf).
-    This establishes yt-dlp's native portable configuration globally, ensuring yt-dlp works
-    consistently from any command prompt across the entire PC even if StreamVortex is deleted.
-    Outputs are dynamically configured to the user's chosen downloads directory (default: ~/Downloads).
     """
     target_dl = (downloads_dir or get_download_dir()).expanduser().resolve()
     target_dl.mkdir(parents=True, exist_ok=True)
 
     conf_path = tools_dir / "yt-dlp.conf"
 
-    # Prioritize user's actual yt-dlp.conf placed in project or bundled
     source_conf = None
     if getattr(sys, "frozen", False):
         exe_conf = Path(sys.executable).parent / "yt-dlp.conf"
@@ -322,7 +281,6 @@ def install_optimized_configs(
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(conf_content)
 
-        # Apply interactive download destinations (videos, subtitles, thumbnails)
         from .engine import update_ytdlp_conf_destinations
         update_ytdlp_conf_destinations(target_dl, conf_path=conf_path)
 
@@ -340,7 +298,7 @@ def install_python_runtime(callback: Optional[Callable[[str, float], None]] = No
     """
     if shutil.which("python"):
         if callback:
-            callback(f"[+] Python is already installed on system PATH.", 100.0)
+            callback("[+] Python is already installed on system PATH.", 100.0)
         return True, shutil.which("python")
 
     temp_dir = Path(os.environ.get("TEMP", "C:/Windows/Temp"))
@@ -362,7 +320,6 @@ def install_python_runtime(callback: Optional[Callable[[str, float], None]] = No
         callback("Running official Python installer (adding Python to PATH)...", 75.0)
 
     try:
-        # Run passive installer adding python to path
         subprocess.run([str(installer), "/passive", "PrependPath=1", "Include_pip=1"], check=True, timeout=120)
         if callback:
             callback("[+] Python 3.11 installed successfully!", 100.0)
@@ -383,7 +340,6 @@ def install_vlc_player(callback: Optional[Callable[[str, float], None]] = None) 
             callback(f"[+] Media player already available: {existing}", 100.0)
         return True, existing
 
-    # Try winget first
     if shutil.which("winget"):
         if callback:
             callback("Installing official VLC Media Player via Windows Package Manager (winget)...", 30.0)
@@ -401,7 +357,6 @@ def install_vlc_player(callback: Optional[Callable[[str, float], None]] = None) 
         except Exception:
             pass
 
-    # Direct download fallback
     temp_dir = Path(os.environ.get("TEMP", "C:/Windows/Temp"))
     vlc_installer = temp_dir / "vlc_setup.exe"
     if callback:
@@ -441,7 +396,6 @@ def add_folder_to_user_path(folder: Path) -> bool:
     """
     try:
         res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=5)
-        # Also update current process os.environ
         if folder_str not in os.environ.get("PATH", ""):
             os.environ["PATH"] = f"{folder_str};" + os.environ.get("PATH", "")
         return res.returncode == 0
@@ -474,7 +428,6 @@ def run_full_onboarding(
 
     report(f"Configuring destination directory: {tools_dir}", 2.0)
 
-    # 1. yt-dlp
     if do_ytdlp:
         report("Setting up yt-dlp core engine...", 5.0)
         ok, detail = install_yt_dlp(tools_dir, lambda m, p: report(m, 5.0 + (p * 0.25)))
@@ -482,7 +435,6 @@ def run_full_onboarding(
     else:
         results["ytdlp"] = {"ok": True, "detail": "Skipped by user"}
 
-    # 2. FFmpeg & FFprobe
     if do_ffmpeg:
         report("Setting up FFmpeg & FFprobe media engine...", 30.0)
         ok, detail = install_ffmpeg_suite(tools_dir, lambda m, p: report(m, 30.0 + (p * 0.30)))
@@ -490,12 +442,10 @@ def run_full_onboarding(
     else:
         results["ffmpeg"] = {"ok": True, "detail": "Skipped by user"}
 
-    # 2b. aria2c download accelerator (used by yt-dlp.conf)
-    report("Checking aria2c multi-connection download accelerator...", 60.0)
+    report("Verifying multi-connection download engine...", 60.0)
     ok_aria, detail_aria = install_aria2c_engine(tools_dir, lambda m, p: report(m, 60.0 + (p * 0.08)))
     results["aria2c"] = {"ok": ok_aria, "detail": detail_aria}
 
-    # 3. Optimized Configs next to yt-dlp.exe
     if do_conf:
         report("Installing optimized yt-dlp.conf preset directly next to yt-dlp.exe...", 68.0)
         ok, detail = install_optimized_configs(tools_dir, downloads_dir=downloads_dir, callback=lambda m, p: report(m, 68.0 + (p * 0.05)))
@@ -503,7 +453,6 @@ def run_full_onboarding(
     else:
         results["conf"] = {"ok": True, "detail": "Skipped by user"}
 
-    # 4. Global Python
     if do_python:
         report("Checking Python environment...", 75.0)
         ok, detail = install_python_runtime(lambda m, p: report(m, 75.0 + (p * 0.10)))
@@ -511,7 +460,6 @@ def run_full_onboarding(
     else:
         results["python"] = {"ok": True, "detail": "Skipped by user"}
 
-    # 5. Media Player (VLC / MPV)
     if do_vlc:
         report("Checking media player for live stream preview...", 85.0)
         ok, detail = install_vlc_player(lambda m, p: report(m, 85.0 + (p * 0.10)))
@@ -519,19 +467,17 @@ def run_full_onboarding(
     else:
         results["player"] = {"ok": True, "detail": "Skipped by user"}
 
-    # 6. Windows User PATH registration
     if do_add_path:
         report(f"Adding {tools_dir} to Windows User PATH...", 96.0)
         add_folder_to_user_path(tools_dir)
         results["path"] = {"ok": True, "detail": f"Added {tools_dir} to User PATH"}
 
-    # 7. Save to StreamVortex config
     cfg = get_config()
     cfg["tools_dir"] = str(tools_dir)
     cfg["ytdlp_conf_path"] = str(tools_dir / "yt-dlp.conf")
     save_config(cfg)
 
-    report("🎉 Onboarding setup complete! StreamVortex is fully operational.", 100.0)
+    report("Onboarding setup complete! StreamVortex is fully operational.", 100.0)
     return results
 
 
@@ -541,7 +487,7 @@ def run_full_onboarding(
 
 def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]] = None):
     """
-    Renders an interactive, modern visual onboarding window.
+    Renders an interactive visual onboarding window.
     """
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
@@ -555,7 +501,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     status = check_environment_status()
 
     win = tb.Toplevel(parent) if (HAS_TB and parent) else (tb.Window(title="StreamVortex Setup Wizard", themename="darkly") if HAS_TB else (tk.Toplevel(parent) if parent else tk.Tk()))
-    win.title("⚡ StreamVortex Zero-Setup Wizard // 1-Click Environment Setup")
+    win.title("StreamVortex Zero-Setup Wizard")
     win.geometry("780x680")
     win.resizable(False, False)
 
@@ -565,13 +511,12 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     container = tb.Frame(win, padding=24) if HAS_TB else tk.Frame(win, padx=24, pady=24, bg="#0f172a")
     container.pack(fill="both", expand=True)
 
-    # Title & Welcome
     title_lbl = tb.Label(
         container,
-        text="🚀 Welcome to StreamVortex",
+        text="Welcome to StreamVortex",
         font=("Segoe UI", 18, "bold"),
         bootstyle="info"
-    ) if HAS_TB else tk.Label(container, text="🚀 Welcome to StreamVortex", font=("Segoe UI", 18, "bold"), fg="#00f2fe", bg="#0f172a")
+    ) if HAS_TB else tk.Label(container, text="Welcome to StreamVortex", font=("Segoe UI", 18, "bold"), fg="#00f2fe", bg="#0f172a")
     title_lbl.pack(anchor="w")
 
     desc_lbl = tb.Label(
@@ -583,9 +528,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     ) if HAS_TB else tk.Label(container, text="StreamVortex can automatically set up everything you need: official yt-dlp, FFmpeg, optimized configs, Python, and VLC media player. Safe, transparent, and verified.", font=("Segoe UI", 9), wraplength=730, fg="#94a3b8", bg="#0f172a")
     desc_lbl.pack(anchor="w", pady=(4, 15))
 
-    # Folder Picker Card
-    # Tools Folder Picker Card
-    folder_card = tb.Labelframe(container, text=" 📂 Tools Installation Folder ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" 📂 Tools Installation Folder ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
+    folder_card = tb.Labelframe(container, text=" Tools Installation Folder ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" Tools Installation Folder ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
     folder_card.pack(fill="x", pady=(0, 10))
 
     folder_var = tk.StringVar(value=str(get_default_tools_dir()))
@@ -600,8 +543,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     browse_btn = tb.Button(folder_card, text="Browse...", command=browse_folder, bootstyle="outline-secondary") if HAS_TB else tk.Button(folder_card, text="Browse...", command=browse_folder)
     browse_btn.pack(side="right")
 
-    # Download Destination Folder Picker Card (Default: ~/Downloads)
-    dl_card = tb.Labelframe(container, text=" 📥 Download Destination Folder (yt-dlp.conf) ", padding=14, bootstyle="primary") if HAS_TB else tk.LabelFrame(container, text=" 📥 Download Destination Folder (yt-dlp.conf) ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
+    dl_card = tb.Labelframe(container, text=" Download Destination Folder (yt-dlp.conf) ", padding=14, bootstyle="primary") if HAS_TB else tk.LabelFrame(container, text=" Download Destination Folder (yt-dlp.conf) ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
     dl_card.pack(fill="x", pady=(0, 10))
 
     from .engine import get_conf_download_dir
@@ -614,11 +556,10 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
         if chosen:
             dl_var.set(chosen)
 
-    browse_dl_btn = tb.Button(dl_card, text="Browse / Drop...", command=browse_dl, bootstyle="outline-primary") if HAS_TB else tk.Button(dl_card, text="Browse...", command=browse_dl)
+    browse_dl_btn = tb.Button(dl_card, text="Browse...", command=browse_dl, bootstyle="outline-primary") if HAS_TB else tk.Button(dl_card, text="Browse...", command=browse_dl)
     browse_dl_btn.pack(side="right")
 
-    # Options Card
-    opts_card = tb.Labelframe(container, text=" 📦 Components to Configure & Install ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" 📦 Components to Configure & Install ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
+    opts_card = tb.Labelframe(container, text=" Components to Configure & Install ", padding=14, bootstyle="info") if HAS_TB else tk.LabelFrame(container, text=" Components to Configure & Install ", padx=14, pady=14, fg="#00f2fe", bg="#1e293b")
     opts_card.pack(fill="x", pady=(0, 10))
 
     chk_ytdlp_var = tk.BooleanVar(value=True)
@@ -640,7 +581,6 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     tb.Checkbutton(opts_card, text=vlc_lbl_text, variable=chk_vlc_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text=vlc_lbl_text, variable=chk_vlc_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
     tb.Checkbutton(opts_card, text="Add Tools folder to Windows User PATH (Enables global CMD usage)", variable=chk_path_var, bootstyle="round-toggle").pack(anchor="w", pady=2) if HAS_TB else tk.Checkbutton(opts_card, text="Add Tools folder to Windows User PATH (Enables global CMD usage)", variable=chk_path_var, bg="#1e293b", fg="white", selectcolor="#0f172a").pack(anchor="w", pady=2)
 
-    # Progress & Log
     progress_bar = tb.Progressbar(container, mode="determinate", bootstyle="success-striped") if HAS_TB else ttk.Progressbar(container, mode="determinate")
     progress_bar.pack(fill="x", pady=(6, 6))
 
@@ -648,7 +588,6 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
     log_box.pack(fill="both", expand=True, pady=(0, 10))
     log_box.insert("end", "[Ready] Click 'Start Automated Setup' below to begin.\n")
 
-    # Action Buttons
     btn_frame = tb.Frame(container) if HAS_TB else tk.Frame(container, bg="#0f172a")
     btn_frame.pack(fill="x")
 
@@ -667,7 +606,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
                     progress_bar.configure(value=pct)
                 win.after(0, _update)
 
-            res = run_full_onboarding(
+            run_full_onboarding(
                 tools_dir=tools_path,
                 downloads_dir=dl_path,
                 do_ytdlp=chk_ytdlp_var.get(),
@@ -680,8 +619,8 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
             )
 
             def _done():
-                start_btn.config(text="✓ Setup Complete", bootstyle="success", state="disabled")
-                close_btn.config(text="🚀 Launch Studio", bootstyle="info", command=_finish)
+                start_btn.config(text="Setup Complete", bootstyle="success", state="disabled")
+                close_btn.config(text="Launch Studio", bootstyle="info", command=_finish)
                 messagebox.showinfo("Setup Complete", f"StreamVortex has configured everything!\n\nTools: {tools_path}\nDownloads: {dl_path}\nConfig: {tools_path / 'yt-dlp.conf'}")
             win.after(0, _done)
 
@@ -692,7 +631,7 @@ def launch_onboarding_gui(parent=None, on_complete: Optional[Callable[[], None]]
         if on_complete:
             on_complete()
 
-    start_btn = tb.Button(btn_frame, text="⚡ Start Automated Setup (1-Click)", bootstyle="success", command=_start) if HAS_TB else tk.Button(btn_frame, text="⚡ Start Automated Setup", command=_start, bg="#10b981", fg="white")
+    start_btn = tb.Button(btn_frame, text="Start Automated Setup (1-Click)", bootstyle="success", command=_start) if HAS_TB else tk.Button(btn_frame, text="Start Automated Setup", command=_start, bg="#10b981", fg="white")
     start_btn.pack(side="left", padx=(0, 8))
 
     close_btn = tb.Button(btn_frame, text="Cancel / Skip", bootstyle="outline-secondary", command=win.destroy) if HAS_TB else tk.Button(btn_frame, text="Cancel / Skip", command=win.destroy)
@@ -719,7 +658,7 @@ def run_cli_onboarding():
     console.clear()
     console.print(
         Panel.fit(
-            "[bold cyan]⚡ StreamVortex Zero-Setup Onboarding[/bold cyan]\n"
+            "[bold cyan]StreamVortex Zero-Setup Onboarding[/bold cyan]\n"
             "[dim]Automated installation of yt-dlp, FFmpeg, optimized configs, Python, and VLC[/dim]",
             border_style="bright_blue"
         )
@@ -735,13 +674,12 @@ def run_cli_onboarding():
 
     tools_dir = Path(tools_dir_str)
 
-    # Interactive Download Destination with Drag & Drop prompt
     from .engine import get_conf_download_dir
     default_dl = str(get_conf_download_dir())
     console.print(
-        f"\n[bold cyan]📥 Download Destination Folder[/bold cyan]\n"
+        f"\n[bold cyan]Download Destination Folder[/bold cyan]\n"
         f"[dim]Current default: [bold white]{default_dl}[/bold white][/dim]\n"
-        "[dim]💡 Tip: Drag and drop ANY folder from Windows Explorer into this window, or press Enter to keep default.[/dim]"
+        "[dim]Tip: Drag and drop ANY folder from Windows Explorer into this window, or press Enter to keep default.[/dim]"
     )
     raw_dl = questionary.text(
         "Enter or Drag & Drop download folder:",
@@ -788,7 +726,7 @@ def run_cli_onboarding():
         callback=cli_cb
     )
 
-    console.print(f"\n[bold green][+] Setup complete! Everything is ready.[/bold green]")
+    console.print("\n[bold green][+] Setup complete! Everything is ready.[/bold green]")
     console.print(f"[dim]Downloads will be saved to: [bold white]{downloads_dir}[/bold white][/dim]\n")
 
 

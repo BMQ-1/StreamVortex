@@ -118,12 +118,10 @@ def find_ffmpeg() -> Optional[str]:
     """
     Locates the global FFmpeg executable on the device.
     Prioritizes:
-    1. System PATH (e.g. C:\\ffmpeg_folder\\... or C:\\Tools\\ffmpeg.exe)
+    1. System PATH (e.g. C:\\Tools\\ffmpeg.exe)
     2. Configured tools_dir from onboarding
-    3. C:\\ffmpeg_folder\\ffmpeg-essentials_build\\bin\\ffmpeg.exe
-    4. C:\\Tools\\ffmpeg.exe
-    5. Other standard global paths
-    6. Local fallback (only if no global FFmpeg is available)
+    3. Standard global Windows install locations (C:\\Tools, C:\\ffmpeg, Program Files, WinGet, Chocolatey)
+    4. Local fallback (only if no global FFmpeg is available)
     """
     # 1. Check system PATH (Global)
     which_bin = shutil.which("ffmpeg")
@@ -140,10 +138,8 @@ def find_ffmpeg() -> Optional[str]:
     except Exception:
         pass
 
-    # 3. Known global paths
+    # 3. Known standard global paths
     candidates = [
-        Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffmpeg.exe"),
-        Path("C:/ffmpeg_folder/bin/ffmpeg.exe"),
         Path("C:/Tools/ffmpeg.exe"),
         Path("C:/ffmpeg/bin/ffmpeg.exe"),
         Path("C:/Program Files/ffmpeg/bin/ffmpeg.exe"),
@@ -191,10 +187,8 @@ def find_ffprobe() -> Optional[str]:
     except Exception:
         pass
 
-    # 4. Known global paths
+    # 4. Known standard global paths
     candidates = [
-        Path("C:/ffmpeg_folder/ffmpeg-essentials_build/bin/ffprobe.exe"),
-        Path("C:/ffmpeg_folder/bin/ffprobe.exe"),
         Path("C:/Tools/ffprobe.exe"),
         Path("C:/ffmpeg/bin/ffprobe.exe"),
         Path("C:/Program Files/ffmpeg/bin/ffprobe.exe"),
@@ -743,7 +737,7 @@ RESERVED_NAMES = {
 
 
 def sanitize_filename(name: str, max_length: int = 150) -> str:
-    """
+    r"""
     Sanitizes a string to be a safe, clean Windows/Unix filename.
     Guards against:
     - Windows invalid characters (\ / : * ? " < > |)
@@ -804,11 +798,24 @@ def clean_target_url(url: str) -> str:
     # Prevent option injection if URL starts with dashes
     while url.startswith("-"):
         url = url.lstrip("-").strip()
+
+    if not url:
+        return ""
+
+    known_schemes = ("http://", "https://", "smart:", "sniff:", "rtmp://", "rtmps://", "mms://", "rtsp://", "hls://")
+    if not url.startswith(known_schemes):
+        first_segment = url.split("/")[0].split("?")[0].split("#")[0]
+        if "." in first_segment or first_segment.startswith("www."):
+            url = "https://" + url
     try:
         parsed = urllib.parse.urlsplit(url)
         if parsed.query:
             qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-            filtered_qs = {k: v for k, v in qs.items() if not k.lower().startswith("utm_") and k.lower() not in ("si", "fbclid", "igsh", "ref_src")}
+            tracking_params = {
+                "si", "fbclid", "igsh", "igshid", "ref_src", "tt_from", "checksum",
+                "gclid", "msclkid", "mc_eid", "yclid", "zanpid", "spm", "_hsenc", "_hsmi"
+            }
+            filtered_qs = {k: v for k, v in qs.items() if not k.lower().startswith("utm_") and k.lower() not in tracking_params}
             new_query = urllib.parse.urlencode(filtered_qs, doseq=True) if filtered_qs else ""
             url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
     except Exception:
@@ -1009,6 +1016,75 @@ def parse_hls_manifest_variants(m3u8_url: str, timeout: int = 4) -> List[Dict[st
     return formats
 
 
+def resolve_playlist_entries(url: str, timeout: int = 18, max_items: int = 100) -> Optional[Dict[str, Any]]:
+    """
+    Fast flat-playlist inspector using yt-dlp --flat-playlist --dump-single-json.
+    Returns playlist metadata and selectable entries without resolving every individual stream.
+    """
+    ytdlp_cmd = find_ytdlp()
+    platform_info = detect_platform(url)
+    try:
+        cmd = list(ytdlp_cmd) + [
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            "--playlist-end", str(max_items),
+            url,
+        ]
+        cfg = get_config()
+        cookies_browser = (cfg.get("cookies_from_browser") or "").strip().lower()
+        if cookies_browser and cookies_browser != "none":
+            cmd.extend(["--cookies-from-browser", cookies_browser])
+
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        if res.returncode == 0 and res.stdout.strip():
+            data = json.loads(res.stdout)
+            entries_raw = data.get("entries") or []
+            if not entries_raw:
+                return None
+            entries = []
+            for idx, e in enumerate(entries_raw, 1):
+                if not isinstance(e, dict):
+                    continue
+                entry_url = e.get("url") or e.get("webpage_url") or ""
+                if entry_url and not entry_url.startswith("http"):
+                    if platform_info.get("id") == "youtube" and e.get("id"):
+                        entry_url = f"https://www.youtube.com/watch?v={e['id']}"
+                if not entry_url:
+                    continue
+                entries.append({
+                    "index": idx,
+                    "id": e.get("id") or str(idx),
+                    "title": e.get("title") or f"Item #{idx}",
+                    "url": entry_url,
+                    "duration": e.get("duration"),
+                    "uploader": e.get("uploader") or e.get("channel") or data.get("uploader") or "",
+                })
+            if not entries:
+                return None
+            title = data.get("title") or "Playlist"
+            uploader = data.get("uploader") or data.get("channel") or ""
+            return {
+                "title": title,
+                "uploader": uploader,
+                "is_live": False,
+                "is_playlist": True,
+                "id": data.get("id") or "playlist",
+                "platform": platform_info,
+                "original_url": url,
+                "direct_url": None,
+                "http_headers": {},
+                "thumbnail": data.get("thumbnail"),
+                "playlist_count": len(entries),
+                "playlist_entries": entries,
+                "formats": [],
+                "suggested_filename": sanitize_title_for_filename(title, uploader=uploader, ext="mp4"),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
     """
     Universal metadata resolver for any stream or video in the world.
@@ -1033,7 +1109,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                     "id": res.media_id,
                     "platform": platform_info,
                     "original_url": url,
-                    "direct_url": res.direct_url or best_fmt.url,
+                    "direct_url": getattr(res, "direct_url", None) or (best_fmt.url if best_fmt else None),
                     "http_headers": res.http_headers,
                     "formats": [
                         {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext, "width": f.width, "height": f.height}
@@ -1070,7 +1146,7 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
                     "id": res.media_id,
                     "platform": platform_info,
                     "original_url": url,
-                    "direct_url": res.direct_url or res.formats[0].url,
+                    "direct_url": getattr(res, "direct_url", None) or (res.formats[0].url if res.formats else None),
                     "http_headers": res.http_headers,
                     "formats": [
                         {"id": f.quality_id, "url": f.url, "protocol": f.protocol, "ext": f.ext}
@@ -1103,13 +1179,26 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 3. Global yt-dlp probe (YouTube, Twitch, Kick, Vimeo, etc.)
+    # 3. Global yt-dlp probe (YouTube, Twitch, Kick, Vimeo, Playlists, etc.)
     ytdlp_cmd = find_ytdlp()
     try:
-        probe_cmd = list(ytdlp_cmd) + ["--dump-json", "--skip-download", "--no-warnings", url]
+        is_pl_url = ("list=" in url and "watch?v=" not in url) or "/playlist?" in url or "/sets/" in url
+        if is_pl_url:
+            pl_meta = resolve_playlist_entries(url, timeout=max(timeout, 15))
+            if pl_meta and pl_meta.get("playlist_entries"):
+                return pl_meta
+
+        probe_cmd = list(ytdlp_cmd) + ["--dump-json", "--skip-download", "--no-warnings", "--no-playlist", url]
         conf = find_ytdlp_conf()
         if conf:
             probe_cmd.extend(["--config-locations", str(conf)])
+        cfg = get_config()
+        cookies_browser = (cfg.get("cookies_from_browser") or "").strip().lower()
+        if cookies_browser and cookies_browser != "none":
+            probe_cmd.extend(["--cookies-from-browser", cookies_browser])
+        proxy_url = (cfg.get("proxy") or "").strip()
+        if proxy_url:
+            probe_cmd.extend(["--proxy", proxy_url])
 
         res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
         if res.returncode == 0 and res.stdout.strip():
@@ -1121,26 +1210,41 @@ def resolve_stream_metadata(url: str, timeout: int = 8) -> Dict[str, Any]:
             extracted_fmts = []
             for f in raw_fmts:
                 if f.get("url"):
+                    vcodec = f.get("vcodec") or "none"
+                    acodec = f.get("acodec") or "none"
                     extracted_fmts.append({
                         "id": f.get("format_id", "fmt"),
                         "url": f.get("url"),
                         "protocol": f.get("protocol", "https"),
                         "ext": f.get("ext", "mp4"),
+                        "width": f.get("width"),
                         "height": f.get("height"),
+                        "fps": f.get("fps"),
+                        "tbr": round(f["tbr"]) if isinstance(f.get("tbr"), (int, float)) else f.get("tbr"),
+                        "vcodec": vcodec if vcodec != "none" else "",
+                        "acodec": acodec if acodec != "none" else "",
+                        "filesize": f.get("filesize") or f.get("filesize_approx"),
                         "format_note": f.get("format_note", "")
                     })
+            extracted_fmts.sort(key=lambda x: ((x.get("height") or 0), (x.get("tbr") or 0)), reverse=True)
+            best_direct = data.get("url")
+            if not best_direct and extracted_fmts:
+                combined = next((f for f in extracted_fmts if f.get("vcodec") and f.get("acodec")), None)
+                best_direct = (combined or extracted_fmts[0]).get("url")
             return {
                 "title": title,
                 "uploader": uploader,
                 "is_live": is_live,
+                "is_playlist": False,
                 "id": data.get("id"),
                 "platform": platform_info,
                 "original_url": url,
-                "direct_url": data.get("url"),
+                "direct_url": best_direct,
                 "http_headers": data.get("http_headers", {}),
                 "thumbnail": data.get("thumbnail"),
                 "duration": data.get("duration"),
-                "formats": extracted_fmts[-10:] if extracted_fmts else [],
+                "view_count": data.get("view_count"),
+                "formats": extracted_fmts[:18] if extracted_fmts else [],
                 "suggested_filename": sanitize_title_for_filename(title, uploader=uploader, ext="mp4")
             }
     except Exception:
@@ -1339,6 +1443,159 @@ def find_recent_output_file(label: str) -> Optional[str]:
     return None
 
 
+def parse_speed_to_bps(speed_str: Optional[str]) -> float:
+    """Converts speed strings like '14.20MiB/s', '2.5 MB/s', or '1.01x (2422kbits/s)' into bytes/sec."""
+    if not speed_str or speed_str == "--":
+        return 0.0
+    s = str(speed_str)
+    # Check bytes/sec formats first (MiB/s, MB/s, KiB/s, KB/s, B/s, GiB/s)
+    m = re.search(r'([\d\.]+)\s*(GiB|GB|MiB|MB|KiB|KB|B)/s', s, re.IGNORECASE)
+    if m:
+        val = float(m.group(1))
+        unit = m.group(2).lower()
+        mult = {
+            "b": 1.0,
+            "kb": 1000.0, "kib": 1024.0,
+            "mb": 1000.0 ** 2, "mib": 1024.0 ** 2,
+            "gb": 1000.0 ** 3, "gib": 1024.0 ** 3,
+        }.get(unit, 1.0)
+        return val * mult
+    # Check ffmpeg bitrate formats like 2422.1kbits/s
+    m_bit = re.search(r'([\d\.]+)\s*(k|m|g)?bits/s', s, re.IGNORECASE)
+    if m_bit:
+        val = float(m_bit.group(1))
+        prefix = (m_bit.group(2) or "").lower()
+        mult = {"": 1.0, "k": 1000.0, "m": 1000.0 ** 2, "g": 1000.0 ** 3}.get(prefix, 1.0)
+        return (val * mult) / 8.0
+    return 0.0
+
+
+def probe_media_details(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Deep technical media inspection powered by ffprobe + magic-byte container sniffer.
+    Returns codecs, resolution, fps, bitrate, duration, audio specs, and container health.
+    """
+    p = Path(file_path)
+    details: Dict[str, Any] = {
+        "ffprobe_available": False,
+        "video_codec": None,
+        "audio_codec": None,
+        "resolution": None,
+        "fps": None,
+        "duration_sec": None,
+        "duration_formatted": None,
+        "bitrate_kbps": None,
+        "sample_rate": None,
+        "audio_channels": None,
+        "format_name": None,
+        "streams_count": 0,
+    }
+    ffprobe_bin = find_ffprobe()
+    if not ffprobe_bin or not p.exists():
+        return details
+
+    details["ffprobe_available"] = True
+    try:
+        cmd = [
+            ffprobe_bin, "-v", "quiet",
+            "-print_format", "json",
+            "-show_format", "-show_streams",
+            str(p)
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, encoding="utf-8", errors="replace")
+        if res.returncode != 0 or not res.stdout.strip():
+            return details
+        payload = json.loads(res.stdout)
+        fmt = payload.get("format") or {}
+        streams = payload.get("streams") or []
+        details["streams_count"] = len(streams)
+        details["format_name"] = fmt.get("format_name")
+
+        if fmt.get("duration"):
+            try:
+                dur = float(fmt["duration"])
+                details["duration_sec"] = round(dur, 1)
+                hrs = int(dur // 3600)
+                mins = int((dur % 3600) // 60)
+                secs = int(dur % 60)
+                details["duration_formatted"] = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs else f"{mins:02d}:{secs:02d}"
+            except Exception:
+                pass
+        if fmt.get("bit_rate"):
+            try:
+                details["bitrate_kbps"] = round(int(fmt["bit_rate"]) / 1000)
+            except Exception:
+                pass
+
+        for st in streams:
+            ctype = st.get("codec_type")
+            if ctype == "video" and not details["video_codec"]:
+                details["video_codec"] = (st.get("codec_name") or "").upper()
+                w, h = st.get("width"), st.get("height")
+                if w and h:
+                    details["resolution"] = f"{w}x{h}"
+                fr = st.get("avg_frame_rate") or st.get("r_frame_rate")
+                if fr and "/" in str(fr):
+                    try:
+                        num, den = str(fr).split("/", 1)
+                        if float(den) > 0:
+                            fps_val = float(num) / float(den)
+                            if 0 < fps_val < 300:
+                                details["fps"] = round(fps_val, 2)
+                    except Exception:
+                        pass
+            elif ctype == "audio" and not details["audio_codec"]:
+                details["audio_codec"] = (st.get("codec_name") or "").upper()
+                if st.get("sample_rate"):
+                    details["sample_rate"] = f"{int(st['sample_rate']) / 1000:.1f} kHz"
+                if st.get("channels"):
+                    details["audio_channels"] = f"{st['channels']}ch"
+    except Exception:
+        pass
+    return details
+
+
+def scan_folder_for_repairs(folder_path: Union[str, Path]) -> List[Dict[str, Any]]:
+    """Scans a directory for media files that have container mismatches, legacy FLV, or incomplete .part extensions."""
+    root = Path(folder_path)
+    if not root.exists() or not root.is_dir():
+        return []
+    found: List[Dict[str, Any]] = []
+    exts = ("*.mp4", "*.ts", "*.flv", "*.mkv", "*.part", "*.m4v", "*.mov")
+    seen = set()
+    for pat in exts:
+        for p in root.glob(pat):
+            if p in seen or not p.is_file():
+                continue
+            seen.add(p)
+            try:
+                size = p.stat().st_size
+                if size == 0:
+                    continue
+                have = sniff_container(p)
+                ext = p.suffix.lstrip(".").lower()
+                is_flv = (have == "flv" or ext == "flv")
+                is_part = (ext == "part")
+                is_ts_mismatch = (have == "mpegts" and ext != "ts")
+                is_mismatched = is_flv or is_part or is_ts_mismatch or (
+                    have and ext not in (have, "part") and not (ext == "mp4" and have == "mp4")
+                )
+                found.append({
+                    "path": str(p),
+                    "filename": p.name,
+                    "extension": ext,
+                    "detected_container": have or "unknown",
+                    "size_mb": round(size / (1024 * 1024), 2),
+                    "is_mismatched": bool(is_mismatched),
+                    "reason": "Legacy FLV" if is_flv else ("Incomplete .part" if is_part else ("MPEG-TS inside ." + ext if is_ts_mismatch else ("Container mismatch" if is_mismatched else "Clean"))),
+                })
+            except Exception:
+                continue
+    # Show mismatched files first
+    found.sort(key=lambda x: (not x["is_mismatched"], x["filename"].lower()))
+    return found
+
+
 def fixup_recorded_file(
     file_path: Union[str, Path],
     on_output: Optional[Callable[[str], None]] = None,
@@ -1487,13 +1744,90 @@ def fixup_recorded_file(
     return p
 
 
+def extract_audio_from_file(
+    file_path: Union[str, Path],
+    audio_format: str = "mp3",
+    on_output: Optional[Callable[[str], None]] = None
+) -> Optional[Path]:
+    """Extracts high-quality MP3 (320k) or lossless AAC M4A audio from any media file via FFmpeg."""
+    p = Path(file_path)
+    if not p.exists() or not p.is_file():
+        return None
+    ffmpeg_bin = find_ffmpeg()
+    if not ffmpeg_bin:
+        return None
+    fmt = "m4a" if audio_format.lower() == "m4a" else "mp3"
+    out_p = p.with_suffix(f".{fmt}")
+    if out_p.resolve() == p.resolve():
+        out_p = p.with_name(f"{p.stem}_audio.{fmt}")
+    if fmt == "mp3":
+        cmd = [ffmpeg_bin, "-y", "-i", str(p), "-vn", "-c:a", "libmp3lame", "-b:a", "320k", str(out_p)]
+    else:
+        cmd = [ffmpeg_bin, "-y", "-i", str(p), "-vn", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", str(out_p)]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
+        if res.returncode == 0 and out_p.exists() and out_p.stat().st_size > 0:
+            if on_output:
+                on_output(f"[StreamVortex Audio] Extracted {fmt.upper()}: {out_p.name}")
+            return out_p
+    except Exception:
+        pass
+    return None
+
+
 class DownloadManager:
-    """Thread-safe active download tracker with process management for Desktop GUI and Web Studio."""
+    """Thread-safe active download tracker with process management, telemetry history, and live console logs."""
     def __init__(self):
         self._lock = threading.Lock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._console_logs: List[Dict[str, Any]] = []
+        self._telemetry_points: List[Dict[str, Any]] = []
 
-    def start_job(self, job_id: str, title: str, url: str, is_live: bool = False) -> Dict[str, Any]:
+    def append_log(self, job_id: Optional[str], line: str, level: str = "info"):
+        if not line:
+            return
+        low = line.lower()
+        if level == "info":
+            if "error" in low or "failed" in low or "aborted" in low:
+                level = "error"
+            elif "warning" in low or "warn" in low or "retrying" in low:
+                level = "warn"
+            elif "successfully" in low or "100%" in low or "merging" in low or "finished" in low:
+                level = "success"
+        entry = {
+            "ts": time.strftime("%H:%M:%S"),
+            "job_id": job_id or "system",
+            "level": level,
+            "line": line[:500],
+        }
+        with self._lock:
+            self._console_logs.append(entry)
+            if len(self._console_logs) > 350:
+                self._console_logs = self._console_logs[-350:]
+            if job_id and job_id in self._jobs:
+                job_logs = self._jobs[job_id].setdefault("logs", [])
+                job_logs.append(entry)
+                if len(job_logs) > 120:
+                    self._jobs[job_id]["logs"] = job_logs[-120:]
+
+    def get_console_logs(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._console_logs[-limit:])
+
+    def clear_console_logs(self):
+        with self._lock:
+            self._console_logs.clear()
+
+    def start_job(
+        self,
+        job_id: str,
+        title: str,
+        url: str,
+        is_live: bool = False,
+        options: Optional[Dict[str, Any]] = None,
+        platform: Optional[str] = None,
+        container: Optional[str] = None,
+    ) -> Dict[str, Any]:
         with self._lock:
             job = {
                 "id": job_id,
@@ -1502,16 +1836,24 @@ class DownloadManager:
                 "is_live": is_live,
                 "status": "starting",
                 "progress": 0.0,
+                "percent": 0.0,
                 "speed": "--",
+                "speed_bps": 0.0,
                 "eta": "--",
                 "size": "--",
                 "completed": False,
+                "success": False,
                 "error": None,
                 "process": None,
                 "target_path": None,
                 "saved_path": None,
                 "stop_requested": False,
                 "start_time": time.time(),
+                "end_time": None,
+                "platform": platform or "",
+                "container": container or "mp4",
+                "options": dict(options) if isinstance(options, dict) else {},
+                "logs": [],
             }
             self._jobs[job_id] = job
             return job
@@ -1538,8 +1880,13 @@ class DownloadManager:
                 u: Dict[str, Any] = {}
                 if progress is not None:
                     u["progress"] = progress
+                    u["percent"] = progress
                 if speed != "--":
                     u["speed"] = speed
+                    bps = parse_speed_to_bps(speed)
+                    u["speed_bps"] = bps
+                    if bps > 0:
+                        self._record_telemetry_locked()
                 if eta != "--":
                     u["eta"] = eta
                 if size != "--":
@@ -1549,6 +1896,41 @@ class DownloadManager:
                 if saved_path:
                     u["saved_path"] = saved_path
                 self._jobs[job_id].update(u)
+
+    def _record_telemetry_locked(self):
+        now = time.time()
+        total_bps = sum(
+            float(j.get("speed_bps") or 0.0)
+            for j in self._jobs.values()
+            if not j.get("completed")
+        )
+        if self._telemetry_points and (now - self._telemetry_points[-1]["t"]) < 0.7:
+            self._telemetry_points[-1]["bps"] = total_bps
+        else:
+            self._telemetry_points.append({"t": now, "bps": total_bps})
+            if len(self._telemetry_points) > 48:
+                self._telemetry_points = self._telemetry_points[-48:]
+
+    def get_telemetry_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            active_jobs = [j for j in self._jobs.values() if not j.get("completed")]
+            completed_jobs = [j for j in self._jobs.values() if j.get("completed")]
+            total_bps = sum(float(j.get("speed_bps") or 0.0) for j in active_jobs)
+            now = time.time()
+            # Keep chart ticking smoothly even when idle/steady
+            if not self._telemetry_points or (now - self._telemetry_points[-1]["t"]) >= 1.0:
+                self._telemetry_points.append({"t": now, "bps": total_bps})
+                if len(self._telemetry_points) > 48:
+                    self._telemetry_points = self._telemetry_points[-48:]
+            peak_bps = max((p["bps"] for p in self._telemetry_points), default=0.0)
+            return {
+                "active_count": len(active_jobs),
+                "completed_count": len(completed_jobs),
+                "current_bps": total_bps,
+                "current_mbps": round(total_bps / (1024 * 1024), 2),
+                "peak_mbps": round(peak_bps / (1024 * 1024), 2),
+                "series": [round(p["bps"] / (1024 * 1024), 2) for p in self._telemetry_points[-36:]],
+            }
 
     def stop_job(self, job_id: str) -> bool:
         """
@@ -1581,10 +1963,24 @@ class DownloadManager:
             except Exception:
                 pass
 
-            # 3. Wait up to 3.5 seconds for container finalization
+            # 3. Wait up to 2.5 seconds for container finalization
             try:
-                proc.wait(timeout=3.5)
+                proc.wait(timeout=2.5)
             except Exception:
+                pass
+
+            # 4. If still running, enforce tree-kill to eliminate orphaned child processes (ffmpeg.exe, yt-dlp.exe)
+            if proc.poll() is None:
+                if sys.platform == "win32":
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=3
+                        )
+                    except Exception:
+                        pass
                 try:
                     proc.kill()
                     proc.wait(timeout=1.0)
@@ -1647,20 +2043,45 @@ class DownloadManager:
     def finish_job(self, job_id: str, success: bool = True, error: Optional[str] = None):
         with self._lock:
             if job_id in self._jobs:
+                stopped = bool(self._jobs[job_id].get("stop_requested"))
+                final_progress = self._jobs[job_id]["progress"] if stopped else (100.0 if success else self._jobs[job_id]["progress"])
                 self._jobs[job_id].update({
                     "completed": True,
-                    "status": "completed" if success else ("stopped" if self._jobs[job_id].get("stop_requested") else "failed"),
-                    "progress": 100.0 if success else self._jobs[job_id]["progress"],
+                    "success": bool(success or stopped),
+                    "status": "stopped" if stopped else ("completed" if success else "failed"),
+                    "progress": final_progress,
+                    "percent": final_progress,
+                    "speed_bps": 0.0,
+                    "end_time": time.time(),
                     "error": error
                 })
+
+    @staticmethod
+    def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
+        out = {k: v for k, v in job.items() if k not in ("process", "logs")}
+        start_t = float(job.get("start_time") or time.time())
+        end_t = float(job.get("end_time") or time.time())
+        out["elapsed"] = max(0, int((end_t if job.get("completed") else time.time()) - start_t))
+        out["percent"] = out.get("progress", 0.0)
+        out["logs_tail"] = (job.get("logs") or [])[-8:]
+        return out
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def get_serializable_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return self._serialize_job(job) if job else None
+
     def get_active_jobs(self) -> List[Dict[str, Any]]:
         with self._lock:
             return list(self._jobs.values())
+
+    def get_serializable_jobs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [self._serialize_job(j) for j in self._jobs.values()]
 
     def clear_completed(self):
         with self._lock:
@@ -1683,7 +2104,18 @@ def run_ytdlp_download(
     title: Optional[str] = None,
     uploader: Optional[str] = None,
     respect_conf_output: bool = True,
-    job_id: Optional[str] = None
+    job_id: Optional[str] = None,
+    container: Optional[str] = None,
+    subtitles: Optional[bool] = None,
+    embed_metadata: Optional[bool] = None,
+    embed_thumbnail: Optional[bool] = None,
+    sponsorblock: Optional[bool] = None,
+    clip_start: Optional[str] = None,
+    clip_end: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    rate_limit: Optional[str] = None,
+    format_id: Optional[str] = None,
+    proxy: Optional[str] = None,
 ) -> int:
     """
     Executes a yt-dlp download with intelligent configuration management, progress streaming, & title resolution:
@@ -1735,7 +2167,8 @@ def run_ytdlp_download(
     out_path_label = ""
 
     is_audio = audio_only or (quality_preference and quality_preference in ("audio_mp3", "audio_m4a"))
-    ext_target = "m4a" if quality_preference == "audio_m4a" else ("mp3" if is_audio else "mp4")
+    clean_container = (container or "").strip().lower()
+    ext_target = "m4a" if quality_preference == "audio_m4a" else ("mp3" if is_audio else (clean_container or "mp4"))
 
     if output_filename:
         out_path = Path(output_filename)
@@ -1766,17 +2199,74 @@ def run_ytdlp_download(
         ])
 
     # 4. Handle Format Selection & Quality Profiles (resolves precedence with yt-dlp.conf)
-    fmt_args, fmt_reason = build_format_args(
-        quality_preference=quality_preference,
-        is_live=is_live,
-        audio_only=audio_only,
-        conf_path=conf
-    )
-    if fmt_args:
-        cmd.extend(fmt_args)
+    if format_id and not is_audio:
+        cmd.extend(["-f", f"{format_id}+bestaudio/{format_id}/best"])
+        fmt_reason = f"Explicit format selected: {format_id}"
+    else:
+        fmt_args, fmt_reason = build_format_args(
+            quality_preference=quality_preference,
+            is_live=is_live,
+            audio_only=audio_only,
+            conf_path=conf
+        )
+        if fmt_args:
+            cmd.extend(fmt_args)
+
+    # Explicit output container override (MP4, MKV, WebM, TS, FLV)
+    if clean_container and not is_audio and clean_container in ("mp4", "mkv", "webm", "flv", "ts"):
+        if clean_container in ("mp4", "mkv", "webm"):
+            cmd.extend(["--merge-output-format", clean_container])
+            if not is_live:
+                cmd.extend(["--remux-video", clean_container])
+
+    # Subtitles, Metadata, Thumbnail, SponsorBlock toggles
+    if subtitles is True and not is_live:
+        cmd.extend(["--write-subs", "--write-auto-subs", "--sub-langs", "en.*", "--embed-subs"])
+    elif subtitles is False:
+        cmd.extend(["--no-write-subs", "--no-write-auto-subs"])
+
+    if embed_metadata is True:
+        cmd.append("--embed-metadata")
+    elif embed_metadata is False:
+        cmd.append("--no-embed-metadata")
+
+    if embed_thumbnail is True and not is_live:
+        cmd.append("--embed-thumbnail")
+    elif embed_thumbnail is False:
+        cmd.append("--no-embed-thumbnail")
+
+    if sponsorblock is True and not is_live:
+        cmd.extend(["--sponsorblock-remove", "sponsor,selfpromo"])
+
+    # Interactive Clipper / Time-Range Trimmer
+    c_start = (clip_start or "").strip()
+    c_end = (clip_end or "").strip()
+    if (c_start or c_end) and not is_live:
+        s_tok = c_start if c_start else "00:00:00"
+        e_tok = c_end if c_end else "inf"
+        cmd.extend(["--download-sections", f"*{s_tok}-{e_tok}", "--force-keyframes-at-cuts"])
+
+    # Browser Cookies & Proxy & Rate Limit (from call or saved studio config)
+    cfg = get_config()
+    eff_cookies = (cookies_from_browser if cookies_from_browser is not None else cfg.get("cookies_from_browser", "none")) or "none"
+    eff_cookies = eff_cookies.strip().lower()
+    if eff_cookies and eff_cookies != "none":
+        cmd.extend(["--cookies-from-browser", eff_cookies])
+
+    eff_rate = (rate_limit if rate_limit is not None else cfg.get("rate_limit", "")) or ""
+    eff_rate = eff_rate.strip()
+    if eff_rate and eff_rate.lower() != "unlimited":
+        cmd.extend(["-r", eff_rate])
+
+    eff_proxy = (proxy if proxy is not None else cfg.get("proxy", "")) or ""
+    eff_proxy = eff_proxy.strip()
+    if eff_proxy:
+        cmd.extend(["--proxy", eff_proxy])
 
     if fmt_reason:
         msg = f"[StreamVortex Quality] {fmt_reason}"
+        if job_id:
+            DOWNLOAD_MANAGER.append_log(job_id, msg)
         if on_output:
             on_output(msg)
         else:
@@ -1840,7 +2330,7 @@ def run_ytdlp_download(
             except Exception:
                 pass
 
-    if on_output or progress_callback:
+    if job_id or on_output or progress_callback:
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -1856,8 +2346,12 @@ def run_ytdlp_download(
             DOWNLOAD_MANAGER.register_process(job_id, proc, target_path=out_path_label)
 
         try:
+            if job_id:
+                DOWNLOAD_MANAGER.append_log(job_id, f"$ {' '.join(cmd[:8])} ... {stream_url}")
             for line in proc.stdout:
                 clean_line = line.strip()
+                if job_id and clean_line:
+                    DOWNLOAD_MANAGER.append_log(job_id, clean_line)
                 if on_output:
                     on_output(clean_line)
 
@@ -1960,6 +2454,18 @@ def run_ytdlp_download(
                     proc.terminate()
                     proc.wait(timeout=2.0)
                 except Exception:
+                    pass
+                if proc.poll() is None:
+                    if sys.platform == "win32":
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=3
+                            )
+                        except Exception:
+                            pass
                     try:
                         proc.kill()
                         proc.wait(timeout=1.0)
@@ -2164,6 +2670,8 @@ def run_ffmpeg_record(
 
         for line in proc.stderr:
             clean_line = line.strip()
+            if job_id and clean_line:
+                DOWNLOAD_MANAGER.append_log(job_id, clean_line)
             if on_output:
                 on_output(clean_line)
             if clean_line:
@@ -2188,9 +2696,24 @@ def run_ffmpeg_record(
             try:
                 proc.stdin.write("q\n")
                 proc.stdin.flush()
-                proc.wait(timeout=4)
+                proc.wait(timeout=3)
             except Exception:
-                proc.kill()
+                pass
+            if proc.poll() is None:
+                if sys.platform == "win32":
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=3
+                        )
+                    except Exception:
+                        pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
         retcode = 0
     except Exception as e:
         if on_output:

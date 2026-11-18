@@ -42,6 +42,11 @@ class TikTokMediaResult:
     thumbnail: Optional[str] = None
     duration: Optional[float] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
+    direct_url: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.direct_url and self.formats:
+            self.direct_url = self.formats[0].url
 
 
 # Backwards compatibility alias

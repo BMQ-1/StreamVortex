@@ -56,6 +56,14 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
     Tier 1: Fast static regex scan of page content for .m3u8 / .flv / .mpd.
     Returns SniffedStream if found, otherwise None.
     """
+    if not url:
+        return None
+    url = url.strip().strip("'\"<>")
+    if not url.startswith(("http://", "https://")):
+        first_part = url.split("/")[0].split("?")[0].split("#")[0]
+        if "." in first_part or first_part.startswith("www."):
+            url = "https://" + url
+
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -89,18 +97,6 @@ def sniff_static(url: str, custom_headers: Optional[Dict[str, str]] = None) -> O
                     headers={"User-Agent": headers["User-Agent"], "Referer": url},
                     page_title=page_title,
                     all_streams=[{"url": u, "type": "hls"} for u in m3u8_clean]
-                )
-
-            # Look for .flv streams
-            flv_matches = [m.replace("\\u002F", "/").replace("\\/", "/") for m in FLV_REGEX.findall(html)]
-            flv_clean = [u for u in flv_matches if not is_ad_or_tracker(u)]
-            if flv_clean:
-                return SniffedStream(
-                    url=flv_clean[0],
-                    stream_type="flv",
-                    headers={"User-Agent": headers["User-Agent"], "Referer": url},
-                    page_title=page_title,
-                    all_streams=[{"url": u, "type": "flv"} for u in flv_clean]
                 )
 
             # Look for .mpd
@@ -293,7 +289,15 @@ def smart_sniff(
     High-level entry point:
     Attempts direct stream recognition, then static scan, and finally dynamic sniffer.
     """
-    # 0. Immediate direct stream detection
+    if not url:
+        return None
+    url = url.strip().strip("'\"<>")
+    if not url.startswith(("http://", "https://")):
+        first_part = url.split("/")[0].split("?")[0].split("#")[0]
+        if "." in first_part or first_part.startswith("www."):
+            url = "https://" + url
+
+    # Immediate direct stream detection
     try:
         from pathlib import Path
         parsed = urllib.parse.urlsplit(url)
@@ -313,7 +317,6 @@ def smart_sniff(
             return SniffedStream(url=url, stream_type="flv", headers=headers, page_title=stem, all_streams=[{"url": url, "type": "flv"}])
     except Exception:
         pass
-
     if not force_dynamic:
         static_result = sniff_static(url)
         if static_result:

@@ -45,7 +45,7 @@ def download_file_with_progress(
     progress_callback receives: (downloaded_bytes, total_bytes, percent)
     """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "StreamVortex/1.3.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "StreamVortex/2.0.0"})
         with urllib.request.urlopen(req) as resp:
             total_size = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
@@ -200,23 +200,32 @@ def setup_all_binaries(
     try:
         config_dirs = list(get_user_config_dirs("yt-dlp"))
         roaming_dir = next((d for d in config_dirs if "Roaming" in str(d)), config_dirs[0])
-        target_dir = Path(roaming_dir) / "plugins" / "smartstream" / "yt_dlp_plugins" / "extractor"
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_base = Path(roaming_dir) / "plugins" / "smartstream" / "yt_dlp_plugins"
+        source_base = Path(__file__).resolve().parent.parent / "yt_dlp_plugins"
 
-        source_dir = Path(__file__).resolve().parent.parent / "yt_dlp_plugins" / "extractor"
-        if source_dir.exists():
-            for f in source_dir.glob("*.py"):
-                shutil.copy2(f, target_dir / f.name)
-            (target_dir.parent / "__init__.py").touch(exist_ok=True)
-            (target_dir / "__init__.py").touch(exist_ok=True)
-            results["plugin"] = {"status": "OK", "path": str(target_dir)}
+        installed_any = False
+        for sub in ["extractor", "postprocessor"]:
+            s_dir = source_base / sub
+            t_dir = target_base / sub
+            if s_dir.exists():
+                t_dir.mkdir(parents=True, exist_ok=True)
+                for f in s_dir.glob("*.py"):
+                    shutil.copy2(f, t_dir / f.name)
+                (t_dir / "__init__.py").touch(exist_ok=True)
+                installed_any = True
+        if installed_any:
+            (target_base / "__init__.py").touch(exist_ok=True)
+            results["plugin"] = {"status": "OK", "path": str(target_base)}
         else:
-            results["plugin"] = {"status": "WARN", "detail": "Source extractor directory not found"}
+            results["plugin"] = {"status": "WARN", "detail": "Source plugin directories not found"}
     except Exception as e:
         results["plugin"] = {"status": "ERROR", "error": str(e)}
 
     report("Setup verification complete! System is using global environment.", 100.0)
     return results
+
+
+check_and_install_dependencies = setup_all_binaries
 
 
 if __name__ == "__main__":

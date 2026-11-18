@@ -76,4 +76,4 @@ __all__ = [
     "launch_desktop_gui",
 ]
 
-__version__ = "1.3"
+__version__ = "2.0"
